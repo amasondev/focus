@@ -2391,10 +2391,12 @@ delete_to_end_of_line :: (editor: *Editor, buffer: *Buffer) {
 copy_selection_to_clipboard :: (editor: *Editor, buffer: *Buffer, cut := false, cut_lines_without_selection := true) {
     // Check if there's anything to copy else we exit early so we don't trash the clipboard
     any_selection   := false;
-    clear_selection := false;
     for editor.cursors { if has_selection(it) { any_selection = true; break; } }
     if !any_selection && !config.settings.copy_whole_line_without_selection return;
-    else clear_selection = !cut && cut_lines_without_selection;
+    clear_selection := !any_selection
+                       && config.settings.copy_whole_line_without_selection
+                       && !cut
+                       && cut_lines_without_selection;
 
     if cut_lines_without_selection {
         // When cutting, cut whole lines for cursors which don't have selection.
