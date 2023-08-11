@@ -130,9 +130,9 @@ platform_show_cursor :: (show: bool) {
 
 platform_show_cursor :: (show: bool) {
     if show
-        NSCursor.hide();
-    else
         NSCursor.unhide();
+    else
+        NSCursor.hide();
 }
 
 #scope_file
