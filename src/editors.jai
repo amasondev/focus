@@ -30,6 +30,7 @@ editors_handle_event :: (event: Input.Event) -> handled: bool {
             }
 
         case .TEXT_INPUT;
+            platform_show_cursor(false);
             if !key_sequence_input_state.key_sequence_in_progress {
                 active_editor_type_char(event.utf32);
                 return true;
@@ -2448,7 +2449,7 @@ copy_selection_to_clipboard :: (editor: *Editor, buffer: *Buffer, cut := false, 
         editor.cursor_moved = .refresh_only;
     }
     if clear_selection {
-        for * editor.cursors { 
+        for * editor.cursors {
             it.pos = min(it.pos, it.sel);
             it.sel = it.pos;
         }
