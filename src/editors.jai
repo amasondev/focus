@@ -2389,11 +2389,13 @@ delete_to_end_of_line :: (editor: *Editor, buffer: *Buffer) {
 
 copy_selection_to_clipboard :: (editor: *Editor, buffer: *Buffer, cut := false, cut_lines_without_selection := true) {
     // Check if there's anything to copy else we exit early so we don't trash the clipboard
-    any_selection := false;
+    any_selection   := false;
+    clear_selection := false;
     for editor.cursors { if has_selection(it) { any_selection = true; break; } }
-    if !any_selection && !cut && !config.settings.copy_whole_line_without_selection return;
+    if !any_selection && !config.settings.copy_whole_line_without_selection return;
+    else clear_selection = !cut && cut_lines_without_selection;
 
-    if cut && cut_lines_without_selection {
+    if cut_lines_without_selection {
         // When cutting, cut whole lines for cursors which don't have selection.
         // The easiest thing to do is to pre-select lines before removing anything
         for * editor.cursors { if !has_selection(it) select_line(it, buffer); }
@@ -2444,6 +2446,12 @@ copy_selection_to_clipboard :: (editor: *Editor, buffer: *Buffer, cut := false, 
             offset_delta += selection.end - selection.start;
         }
         editor.cursor_moved = .refresh_only;
+    }
+    if clear_selection {
+        for * editor.cursors { 
+            it.pos = min(it.pos, it.sel);
+            it.sel = it.pos;
+        }
     }
 }
 
