@@ -1084,7 +1084,11 @@ update_window_title :: (buffer_id: s64 = -1) {
     if buffer_id >= 0 {
         buffer := open_buffers[buffer_id];
         if buffer.has_file {
-            title = tprint("% • % • %", buffer.file.name, buffer.file.path, title);
+            if buffer.modified {
+                title = tprint("% + • % • %", buffer.file.name, buffer.file.path, title);
+            } else {
+                title = tprint("% • % • %", buffer.file.name, buffer.file.path, title);
+            }
         } else {
             title = tprint("% • %", get_buffer_name(buffer), title);
         }

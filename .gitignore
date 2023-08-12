@@ -1,6 +1,7 @@
 .build/
 *.pdb
 *.exe
+*.app
 *.rdbg
 *.dSYM/
 *.dmg

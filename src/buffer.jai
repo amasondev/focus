@@ -19,10 +19,11 @@ refresh_open_buffers :: () {
 
         session_notify_modified_buffer(editor.buffer_id);
 
+
         // Maybe mark buffer as not modified if we've made it match the contents on disk
         buffer.modified = buffer.meow_hash != calculate_hash(buffer.bytes);
         if !buffer.modified then buffer.modified_on_disk = false;  // we've verified that the contents matches that on disk
-
+        update_window_title(editor.buffer_id);
         finder.need_to_refresh_results = true;
     }
 }
