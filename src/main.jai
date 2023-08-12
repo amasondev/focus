@@ -264,7 +264,14 @@ main :: () {
                 }
             }
 
-            if handled && event.type == .KEYBOARD then num_text_input_events_to_ignore = event.text_input_count;
+            if handled && event.type == .KEYBOARD {
+                num_text_input_events_to_ignore = event.text_input_count;
+                // there seems to be a bug in the Input module
+                // which generates a TEXT_INPUT event for DEL and Spacebar
+                // when Ctrl+Backspace or Ctrl+Space are pressed
+                keycode := event.key_code;
+                if keycode == .BACKSPACE || keycode == .SPACEBAR then num_text_input_events_to_ignore += 1;
+            }
         }
 
         end_key_sequence_handling();
