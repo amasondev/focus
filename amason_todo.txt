@@ -1,0 +1,10 @@
+move cursor to last edit
+fix "switch" not searching "switch to project"
+execute shell command
+open recent files
+hide the example project in the switcher
+visual feedback for file saving
+title add * to dirty files
+buffer list
+hide cursor when typing
+matching bracket/quote highlighting

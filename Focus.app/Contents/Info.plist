@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist>
+    <dict>
+        <key>CFBundleDevelopmentRegion</key>
+        <string>en-US</string>
+
+        <key>CFBundleDisplayName</key>
+        <string>Focus</string>
+
+        <key>CFBundleExecutable</key>
+        <string>Focus</string>
+
+        <key>CFBundleIconFile</key>
+        <string>icon_data.icns</string>
+
+        <key>CFBundleIdentifier</key>
+        <string>dev.focus-editor</string>
+
+        <key>CFBundleInfoDictionaryVersion</key>
+        <string>6.0</string>
+
+        <key>CFBundleName</key>
+        <string>Focus</string>
+
+        <key>CFBundlePackageType</key>
+        <string>APPL</string>
+
+        <key>CFBundleShortVersionString</key>
+        <string>0.2.0-dev</string>
+
+        <key>CFBundleVersion</key>
+        <string>0.2.0-dev</string>
+
+        <key>NSHumanReadableCopyright</key>
+        <string>© 2023 Ivan Ivanov</string>
+    </dict>
+</plist>
