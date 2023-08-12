@@ -23,9 +23,9 @@ commands_dialog_handle_event :: (event: Input.Event) -> handled: bool {
 
     } else if event.type == .TEXT_INPUT {
         char := event.utf32;
-        if char == 127 return true;  // there seems to be a bug in the Input module
+        if char == 127 || char == 32 return true;  // there seems to be a bug in the Input module
                                 // which generates a TEXT_INPUT event for DEL
-                                // when Ctrl+Backspace is pressed
+                                // when Ctrl+Backspace is pressed, as well as Space for Ctrl+Space
 
         text_input_type_char(*commands_dialog.input, char);
         refresh_entries();
