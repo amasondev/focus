@@ -1127,7 +1127,7 @@ deinit :: (using edit_group: *Buffer.Edit_Group) {
 // - replace all [..] with a custom array type without an allocator (also probably using s32's)
 Buffer :: struct {
     file: File_Info;
-    num_times_opened: u8;
+    last_opened_time: Time; // for sorting in project search
     num_editors_open: u8;
 
     meow_hash: u64;

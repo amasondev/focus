@@ -456,7 +456,7 @@ editors_open_buffer :: (buffer_id: s64, placement: Editor_Placement = .in_place)
             }
     }
     buffer := *open_buffers[buffer_id];
-    if buffer.num_times_opened < 255 then buffer.num_times_opened += 1;
+    buffer.last_opened_time = frame_time;
 
     update_window_title(buffer_id);
     maybe_mark_buffer_as_deleted(buffer_id);  // check in case we missed that it's deleted
