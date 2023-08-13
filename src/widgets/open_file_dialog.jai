@@ -42,6 +42,9 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
 init_open_file_dialog :: () {
     // There used to be more stuff here
     open_file_dialog.initted = true;
+    dir := get_home_directory();
+    if config.settings.starting_directory then dir = config.settings.starting_directory;
+    set_path_chunks_from_file(tprint("%/", dir));
     refresh_entries(clear_input = false);
 }
 

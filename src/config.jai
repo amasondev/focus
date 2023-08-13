@@ -349,6 +349,7 @@ Settings :: struct {
     }
     colored_titlebar                    := true;
     hide_mouse_when_typing              := true;
+    starting_directory                  := "";
 
     // TODO
     // convert_tabs_to_spaces_on_load:     false

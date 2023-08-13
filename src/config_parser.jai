@@ -421,6 +421,11 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                         }
                     END;
                     print_to_builder(*b, code, setting.name);
+                case .STRING;
+                    code := #string END
+                        parsed_config.settings.%1 = value;
+                    END;
+                    print_to_builder(*b, code, setting.name);
             }
         }
 

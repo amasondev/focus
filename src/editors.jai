@@ -1264,7 +1264,7 @@ save_buffer :: (editor: *Editor, buffer: *Buffer, save_new_file := false) {
                         add_success_message(tprint("% saved.", buffer.file.name), dismiss_in_seconds = 1);
 
                     } else {
-                        add_error_message(tprint("Error saving %.", buffer.file.name), dismiss_in_seconds = 3);
+                        add_user_error(tprint("Error saving %.", buffer.file.name), dismiss_in_seconds = 3);
                         error_when_saving = true;
                     }
                     remember_last_modtime_and_size(buffer);
