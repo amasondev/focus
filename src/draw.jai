@@ -861,7 +861,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                 if config.settings.cursor_as_block {
                     letter := get_char_at_offset_as_string(buffer, cursor.pos);
                     if letter != "\n" {
-                        Simp.draw_text(font, xx rect.x, xx (rect.y + (line_height - char_x_advance) / 2), letter);
+                        Simp.draw_text(font, xx rect.x, xx (rect.y + (line_height - char_x_advance) / 2), letter, Colors.BACKGROUND);
                     }
                 }
             }
