@@ -128,6 +128,13 @@ platform_show_cursor :: (show: bool) {
         NSCursor.hide();
 }
 
+platform_show_cursor :: (show: bool) {
+    if show
+        NSCursor.unhide();
+    else
+        NSCursor.hide();
+}
+
 #scope_file
 
 Monitor :: struct {

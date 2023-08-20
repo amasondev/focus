@@ -122,6 +122,8 @@ Cmd-Shift-C                 move_cursor_to_viewport_center
 {Shift}-Ctrl-ArrowDown      move_down_to_empty_line
 
 Escape                      remove_additional_cursors
+Alt-Shift-I                 add_cursors_to_line_ends
+Alt-Shift-Ctrl-I            add_cursors_to_line_starts
 
 Enter                       break_line
 Ctrl-Enter                  new_line_below_without_breaking
@@ -140,6 +142,7 @@ Cmd-Shift-N                 create_new_file_on_the_side
 
 Alt-Shift-ArrowUp           create_cursor_above
 Alt-Shift-ArrowDown         create_cursor_below
+Alt-A                       align_cursors
 
 Alt-Z                       toggle_line_wrap
 
