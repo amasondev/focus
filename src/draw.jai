@@ -311,12 +311,12 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
     rect = align_to_grid(rect);
     if !is_valid(rect) return;
 
-    draw_rect(rect, Colors.BACKGROUND);
 
     became_active := maybe_set_hot_or_active(ui_id, rect, .TEXT_SELECT);
     if became_active then activate_editors();
 
     editor_is_active := editor_id == editors.active && Input.input_application_has_focus;
+    draw_rect(rect, ifx editor_is_active then Colors.BACKGROUND else Colors.BACKGROUND_DARK);
 
     // Calculate text origin in screen coordinates
     text_offset := make_vector2(char_x_advance, -char_x_advance);
