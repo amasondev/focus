@@ -75,6 +75,7 @@ refresh_entries :: () {
     for command : commands {
         if command.requires_layout == .Single && editors.layout == .None   continue;
         if command.requires_layout == .Double && editors.layout != .Double continue;
+        if !project_config_path && (command.action == .open_project_config || command.action == .close_project) continue;
 
         score, highlights := fuzzy_match(command.name, filter_chars);
         if score < 0 continue;
@@ -136,9 +137,11 @@ commands := #run Command.[
     .{ .show_open_file_dialog_in_navigate_mode_from_root,   "Navigate To File From Root",         0, .None },
 
     .{ .switch_to_project,                                  "Switch To Project",                  0, .None },
-    .{ .open_projects_directory,                            "Open Projects Directory",            0, .None },
-    .{ .open_project_config,                                "Open Config For Project",            0, .None },
+    .{ .close_project,                                      "Close Project",                      0, .None },
+    .{ .open_projects_directory,                            "Open Directory With Project Files",  0, .None },
+    .{ .open_project_config,                                "Open Project Config",                0, .None },
     .{ .open_global_config,                                 "Open Global Config",                 0, .None },
+    .{ .show_default_config,                                "Show Default Config (readonly)",     0, .None },
 
     .{ .create_new_file,                                    "Create New File",                    0, .None },
     .{ .create_new_file_on_the_side,                        "Create New File On The Side",        0, .Single },
@@ -147,6 +150,7 @@ commands := #run Command.[
 
     .{ .select_all,                                         "Select All",                         0, .Single },
     .{ .select_line,                                        "Select Line",                        0, .Single },
+    .{ .select_all_occurrences,                             "Select All Occurrences",             0, .Single },
     .{ .go_to_line,                                         "Go To Line",                         0, .Single },
 
     .{ .close_current_editor,                               "Close File",                         0, .Single },
@@ -200,6 +204,7 @@ commands := #run Command.[
 
     .{ .toggle_line_wrap,                                   "Toggle Line Wrap",                   0, .Single },
     .{ .toggle_line_numbers,                                "Toggle Line Numbers",                0, .None },
+    .{ .toggle_fullscreen,                                  "Toggle Fullscreen",                  0, .None },
 
     .{ .autoindent_region,                                  "Autoindent Region",                  0, .Single },
 ];

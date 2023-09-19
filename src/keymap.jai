@@ -269,10 +269,13 @@ ACTIONS_COMMON :: string.[
 
     "open_project",
     "switch_to_project",  // same as open_project, renaming for consistency
+    "close_project",
     "open_projects_directory",
     "open_global_config",
     "open_project_config",
-    "open_error_log",
+    "show_default_config",
+    // "open_error_log",  // todo
+    "toggle_fullscreen",
 
     "show_commands",
     "search_in_buffer",
@@ -327,6 +330,7 @@ ACTIONS_COMMON :: string.[
 
 ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "select_word_or_create_another_cursor",
+    "select_all_occurrences",
     "create_cursor_above",
     "create_cursor_below",
     "align_cursors",
@@ -401,6 +405,7 @@ ACTIONS_SEARCH_DIALOG :: #run arrays_concat(ACTIONS_COMMON, string.[
     "open_entry_on_the_right",
     "toggle_case_sensitive",
     "toggle_whole_word",
+    "toggle_regex_search",
 ]);
 
 // Used for testing strings in parser

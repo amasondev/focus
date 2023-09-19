@@ -150,22 +150,12 @@ main :: () {
                 continue;
             }
 
-            // Try to avoid hot-looping on Linux/macOS
+            // Try to avoid hot-looping on macOS
             if nothing_to_do_this_frame {
                 sleep_milliseconds(1);
                 continue;
             }
         }
-
-        // NOTE: this optimisation has caused some problems, so commenting it out for now
-        // // Don't redraw if we're mousing around outside the window
-        // if !redraw_requested
-        //     && !Input.events_this_frame
-        //     && !mouse_pointer_is_within(screen_with_title_bar)
-        //     && window_has_focus == Input.input_application_has_focus
-        //     && !window_resized
-        // then
-        //     continue;
 
         redraw_requested = false;
         window_resized   = false;
@@ -318,9 +308,11 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
 
         case .open_project; /* deprecated */                    show_open_project_dialog();                         return true;
         case .switch_to_project;                                show_open_project_dialog();                         return true;
+        case .close_project;                                    close_project();                                    return true;
         case .open_projects_directory;                          platform_open_in_explorer(projects_dir);            return true;
         case .open_global_config;                               editors_open_global_config(placement);              return true;
         case .open_project_config;                              editors_open_project_config(placement);             return true;
+        case .show_default_config;                              editors_show_default_config(placement);             return true;
 
         case .go_to_line;                                       show_go_to_line_dialog();                           return true;
         case .create_new_file;                                  editors_create_new_file(placement);                 return true;
@@ -331,6 +323,7 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .show_open_file_dialog_in_navigate_mode_from_root; show_open_file_dialog(.navigate, from_root = true); return true;
 
         case .show_commands;                                    show_commands_dialog();                             return true;
+        case .toggle_fullscreen;                                editor_toggle_fullscreen();                         return true;
 
         case .dump_key_mappings;                                dump_key_mappings();                                return true;
 
@@ -478,6 +471,11 @@ update_mouse_state :: () {
     update_button(*mouse.middle, .MOUSE_BUTTON_MIDDLE);
 }
 
+editor_toggle_fullscreen :: () {
+    fullscreen = !fullscreen;
+    toggle_fullscreen(window, fullscreen, *fullscreen_state);  // platform-specific
+}
+
 increase_font_size :: () {
     if (font_size + 1) <= MAX_FONT_SIZE {
         font_size += 1;
@@ -548,6 +546,22 @@ update_window_size :: (w: s64, h: s64) {
     }
 }
 
+current_time_consensus_backwards_compatible :: () -> Apollo_Time {
+    #if WINDOWS7 {
+        #assert OS == .WINDOWS;
+        // GetSystemTimePreciseAsFileTime is only supported in Windows 8+
+        // and that's what Apollo_Time uses.
+        // TODO: remove when we drop support for Windows 7
+        ft_now: FILETIME;
+        GetSystemTimeAsFileTime(*ft_now);
+
+        apollo := filetime_to_apollo(ft_now);
+        return apollo;
+    } else {
+        return current_time_consensus();
+    }
+}
+
 calculate_hash: (bytes: [] u8) -> u64 = calculate_meow_hash;
 
 // Important directories
@@ -563,6 +577,9 @@ window_height := 0;
 window_x  := -1;
 window_y  := -1;
 dpi_scale := 1.0;
+
+fullscreen: bool;
+fullscreen_state: Saved_Window_Info;
 
 redraw_requested        := true;  // set to true to render the first frame
 should_quit             := false;
@@ -612,6 +629,7 @@ WHEEL_SENSITIVITY :: 1.0;
 PEN_ICON            :: #run to_string(*convert_utf32_to_utf8(0xf304));
 CASE_SENSITIVE_ICON :: #run to_string(*convert_utf32_to_utf8(0xf031));
 WHOLE_WORD_ICON     :: #run to_string(*convert_utf32_to_utf8(0xe4ba));
+REGEX_SEARCH_ICON   :: #run to_string(*convert_utf32_to_utf8(0xf621));
 BULLET_ICON         :: #run to_string(*convert_utf32_to_utf8(0x2022));
 XMARK_ICON          :: #run to_string(*convert_utf32_to_utf8(0xf057));
 
@@ -737,6 +755,8 @@ dont_ignore_next_window_resize := false;
 #load "langs/focus_config.jai";
 #load "langs/glsl.jai";
 #load "langs/worklog.jai";
+#load "langs/python.jai";
+#load "langs/renpy.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
@@ -748,6 +768,22 @@ dont_ignore_next_window_resize := false;
 } else {
     #assert false, "Unsupported OS";
 }
+
+/*
+ * Idealy this would go under `#if OS == .LINUX`. However, that doesn't work at the moment,
+ * compilation fails with the following error:
+ *
+ *   Error: Cannot designate program parameters for the module "Linux_Display" because an import for that module has already been seen, so it's too late.
+ *
+ * This seems to happen because imports placed inside of an `#if` are processed after top-level
+ * imports, and `Linux_Display` is pulled-in by other modules (`Clipboard`, `Input`, `Simp`) that
+ * the editor imports at the top level. Not sure if this is a compiler bug or if it's working as
+ * intended, pretty hard to say considering evaluation order is not guaranteed in any way.
+ *
+ * `Linux_Display` is empty on platforms other than Linux, so importing it should be basically
+ * free on Windows/MacOS.
+ */
+_ :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
 
 #import "Atomics";
 #import "Basic"()(MEMORY_DEBUGGER = DEBUG);
@@ -766,6 +802,12 @@ dont_ignore_next_window_resize := false;
 #import "Thread";
 #import "Compiler";
 #import "Machine_X64";
+
+re :: #import "uniform";
+
+// NOTE to future self: remove `.NeverCapture` from `BASE_REGEX_FLAGS` if we ever want to have
+//                      find-and-replace with regex capture support
+BASE_REGEX_FLAGS : re.ParseFlags : (.LikePerl | .NeverCapture) & ~.OneLine;
 
 // #if DEBUG {
 //     #import "Tracy";

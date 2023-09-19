@@ -504,7 +504,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                 if right < screen_pos.x  then offset.x = screen_pos.x - right;
                 if top   < screen_pos.y  then offset.y = screen_pos.y - top;
 
-                left_target := max(viewport.left + cast(s32) offset.x, 0);
+                left_target := max(viewport.left  + cast(s32) offset.x, 0);
                 top_target  := clamp(viewport.top - cast(s32) offset.y, 0, max_y_scroll);
 
                 if left_target != viewport.scroll_x.target then start_animation(*viewport.scroll_x, viewport.left, left_target);
@@ -516,15 +516,12 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
             // Use the target editor width (not current width) when a new editor is appearing
             editor_width := ifx scroll_to_cursor == .yes_new_editor then total_editor_area.w / 2 else rect.w;
 
-            cursor_pos_from_left := cursor_coords[main_cursor].pos.col * char_x_advance + text_offset.x;
-            left_target := cast(s32)(cursor_pos_from_left - editor_width + char_x_advance * 3);
-            if left_target < 0 then left_target = 0;
+            cursor_pos_from_left := cursor_coords[main_cursor].pos.col  * char_x_advance + text_offset.x;
+            cursor_pos_from_top  := cursor_coords[main_cursor].pos.line * line_height;
+            left_target          := cast(s32) max(cursor_pos_from_left - editor_width + char_x_advance * 3, 0);
+            top_target           := cast(s32) max(cursor_pos_from_top  - rect.h / 2,  0);
             if left_target != scroll_x.target then start_animation(*viewport.scroll_x, viewport.left, left_target);
-
-            cursor_pos_from_top := cursor_coords[main_cursor].pos.line * line_height;
-            top_target := cast(s32)(cursor_pos_from_top - rect.h / 2);
-            if top_target < 0 then top_target = 0;
-            if top_target != scroll_y.target then start_animation(*viewport.scroll_y, viewport.top, top_target);
+            if top_target  != scroll_y.target then start_animation(*viewport.scroll_y, viewport.top,  top_target);
 
             scroll_to_cursor = .no;
 
@@ -560,6 +557,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                     if !array_find(cursor_offsets, xx offset) {  // @Speed: slow when many cursors
                         highlight := array_add(*editor.highlights);
                         highlight.offset = offset;
+                        highlight.count  = selected_text.count;
                         highlight.line   = offset_to_real_line(buffer, offset);
                     }
 
@@ -628,15 +626,16 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
             end   = get_line_start_offset(editor, buffer, visible_lines_end + 1),
         };
 
-        // Calculate max horizontal scroll in pixels
-        max_line_pixel_width: s32 = 0;
+        max_line_pixel_width: s32 = 0;    // max horizontal scroll in pixels - for horizontal scrolling
         for line_num : visible_lines_start .. visible_lines_end {
             line_start := get_line_start_offset(editor, buffer, line_num);
             length     := get_line_start_offset(editor, buffer, line_num+1) - line_start;
             line := array_view(buffer.bytes, line_start, length);
+
             line_pixel_width := cast(s32) ((get_num_chars(line) + min_visible_chars) * char_x_advance);
             max_line_pixel_width = max(max_line_pixel_width, line_pixel_width);
         }
+
         viewport_width := cast(s32) rect.w;
         max_x_scroll: s32 = 0;
         if max_line_pixel_width > viewport_width then max_x_scroll = max_line_pixel_width - viewport_width;
@@ -732,7 +731,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
         // Draw selection highlights
         if !search_bar_is_open(editor) {
             for highlights {
-                start, end := it.offset, it.offset + selected_text_length;
+                start, end := it.offset, it.offset + it.count;
                 if end   < visible_offset_range.start continue;
                 if start > visible_offset_range.end   break;
 
@@ -743,13 +742,41 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
             }
         }
 
+        // Draw indent guides
+        if config.settings.draw_indent_guides {
+            indent_levels: [..] int;
+            indent_levels.allocator = temp;
+
+            current_level := -1;
+            for line_num : visible_lines_start .. visible_lines_end {
+                line   := get_line_as_string(editor, buffer, line_num);
+                indent := get_visual_indent_in_spaces(line);
+
+                indent_level := -1;
+                if indent > 0 then indent_level = (indent - 1) / TAB_SIZE;
+                if !trim_right(line) then indent_level = current_level; else current_level = indent_level;
+
+                array_add(*indent_levels, indent_level);
+            }
+
+            guide := Rect.{ text_origin.x, text_origin.y - visible_lines_start * line_height, 1, line_height };
+            Simp.set_shader_for_color(enable_blend = true);
+            for level : indent_levels {
+                for 0..level {
+                    guide.x = text_origin.x + it * char_x_advance * TAB_SIZE;
+                    draw_rect_raw(guide, Colors.SELECTION_HIGHLIGHT);
+                }
+                guide.y -= line_height;
+            }
+        }
+
         cursors_active := editor_is_active && active_global_widget == .editors;
 
-        // Draw selections
         if !search_bar_is_open(editor) {
             Simp.set_shader_for_rects();
             for cursor : cursors {
                 if has_selection(cursor) {
+                    // Draw selections
                     range := get_selection(cursor);
                     if range.end   < visible_offset_range.start continue;
                     if range.start > visible_offset_range.end   break;
@@ -759,19 +786,36 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                     color := ifx cursors_active then Colors.SELECTION_ACTIVE else Colors.SELECTION_INACTIVE;
                     draw_range(selection, editor, buffer, visible_lines_start, visible_lines_end, text_origin, color);
                 }
+                else if cursors_active && config.settings.highlight_line_with_cursor {
+                    // Draw current line highlight
+                    coords := cursor_coords[it_index];
+                    line_start_offset := get_line_start_offset(editor, buffer, coords.pos.line);
+                    line_start_coords := offset_to_coords(editor, buffer, line_start_offset);
+
+                    // @Note: modified from hidden_chars_on_the_left below, get the x offset if we are scrolled horizontally
+                    x_offset := max((viewport.left / char_x_advance) - 1, 0);
+
+                    line_rect := Rect.{
+                        x = text_origin.x + (x_offset * char_x_advance),
+                        y = text_origin.y - coords.pos.line * line_height,
+                        w = rect.w - scrollbar_size - ifx x_offset == 0 then char_x_advance,   // @Note: text_origin.x is 1 char_x_advance in, so if we can see the beginning of the line, shorten the rect
+                        h = line_height,
+                    };
+                    draw_rect(line_rect, Colors.BACKGROUND_BRIGHT);
+                }
             }
         }
 
         // Draw search results
         if search_bar_is_open(editor) {
             for search_bar.results {
-                start, end := it.offset, it.offset + search_bar.input.text.count;
+                start, end := it.offset, it.offset + it.count;
                 if end   < visible_offset_range.start continue;
                 if start > visible_offset_range.end   break;
 
                 range: Coords_Range = ---;
                 range.start = offset_to_coords(editor, buffer, it.offset);
-                range.end   = offset_to_coords(editor, buffer, it.offset + search_bar.input.text.count);
+                range.end   = offset_to_coords(editor, buffer, it.offset + it.count);
                 color := ifx search_bar.selected_result == it_index then Colors.SEARCH_RESULT_ACTIVE else Colors.SEARCH_RESULT_INACTIVE;
                 draw_range(range, editor, buffer, visible_lines_start, visible_lines_end, text_origin, color);
             }
@@ -812,8 +856,8 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
         // Draw text
         if buffer.needs_coloring || buffer.colors.count != buffer.bytes.count then recalculate_colors(buffer);  // right before drawing
 
-        hidden_chars_on_the_left := cast(s32) max((viewport.left / char_x_advance) - 2, 0);
         max_chars_horizontally   := cast(s32) (rect.w / char_x_advance) + 2;
+        hidden_chars_on_the_left := cast(s32) max((viewport.left / char_x_advance) - 2, 0);
 
         pen := text_origin;
         pen.y += (line_height - char_x_advance) / 2 - visible_lines_start * line_height;
@@ -831,7 +875,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
             colors := ifx line then array_view(buffer.colors, line.data - buffer.bytes.data, line.count) else .[];
             code_lines[line_num-visible_lines_start] = .{ line = line, tab_spaces = tab_spaces, colors = colors };
         }
-        Simp.draw_code(font, xx pen.x, xx pen.y, char_x_advance, line_height, code_lines, CODE_COLOR_MAP, TAB_SIZE);
+        Simp.draw_code(font, xx pen.x, xx pen.y, char_x_advance, line_height, code_lines, CODE_COLOR_MAP, TAB_SIZE, hidden_chars_on_the_left);
 
         // Draw continuation markers for wrapped lines
         if line_wrap_is_active(editor) && !config.settings.show_line_numbers {
@@ -972,10 +1016,11 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
 
         Simp.draw_prepared_text(font_ui_small, xx (numbers_rect.x + padding), xx (numbers_rect.y + (numbers_rect.h - font_ui_small.character_height) / 2.0), color = Colors.UI_DEFAULT);
         input_active := editor_is_active && search_bar.active && active_global_widget == .editors;
-        draw_text_input(*search_bar.input, input_rect, active = input_active, ui_id = input_id, label = " Find in buffer", margin_right = input_rect.h * 2);
+        color := ifx !regex_search || (regex_search && regex_is_valid) then Colors.NONE else Colors.UI_ERROR_BRIGHT;
+        draw_text_input(*search_bar.input, input_rect, active = input_active, ui_id = input_id, label = " Find in buffer", margin_right = input_rect.h * 2, _color = color);
 
         button_width := input_rect.h;
-        pressed, hover_match_case, hover_match_word := false, false, false;
+        pressed, hover_match_case, hover_match_word, hover_regex_search := false, false, false, false;
 
         pressed, hover_match_case = draw_text_input_modifier_button(input_id, input_rect, button_width, case_sensitive, CASE_SENSITIVE_ICON);
         if pressed {
@@ -991,6 +1036,14 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
             redraw_requested = true;
         }
 
+        input_rect.w -= button_width - 4 * dpi_scale;
+
+        pressed, hover_regex_search = draw_text_input_modifier_button(input_id, input_rect, button_width, regex_search, REGEX_SEARCH_ICON);
+        if pressed {
+            search_bar_toggle_regex_search(editor, buffer);
+            redraw_requested = true;
+        }
+
         // Draw tooltips last
         tooltip := "";
         if hover_match_case {
@@ -1000,6 +1053,10 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
         } else if hover_match_word {
             tooltip = "Match Whole Word";
             combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_whole_word);
+            if combo then tooltip = tprint("% (%)", tooltip, combo);
+        } else if hover_regex_search {
+            tooltip = "Regex search";
+            combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_regex_search);
             if combo then tooltip = tprint("% (%)", tooltip, combo);
         }
         if tooltip then draw_tooltip_bottom_left(tooltip, Vector2.{ x = mouse.pointer.x - input_rect.h / 2, y = input_rect.y + input_rect.h / 3 });
@@ -1114,7 +1171,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                 // Draw code line
                 {
                     match_start := entry.offset;
-                    match_end   := min(entry.offset + search_bar.input.text.count, line_range.end);  // if we have a multi-line match, we will still show only the first line
+                    match_end   := min(entry.offset + entry.count, line_range.end);  // if we have a multi-line match, we will still show only the first line
                     line_start  := ifx text_start <= match_start then text_start else line_range.start;
                     chars_until_match_start := get_num_chars(array_view(buffer.bytes, line_start, match_start - line_start));
                     chars_until_match_end   := get_num_chars(array_view(buffer.bytes, line_start, match_end   - line_start));
@@ -1272,7 +1329,7 @@ draw_file_info :: (buffer: Buffer, width: float, padding: float, _pen: Vector2, 
     if buffer.readonly {
         pen.x += width + padding;
         width = xx Simp.prepare_text(font_ui_bold, "[readonly]");
-        Simp.draw_prepared_text(font_ui_bold, xx pen.x, xx pen.y, color = Colors.UI_ERROR_BRIGHT);
+        Simp.draw_prepared_text(font_ui_bold, xx pen.x, xx pen.y, color = Colors.UI_WARNING);
     }
     if buffer.error_when_saving {
         pen.x += width + padding;
@@ -2067,11 +2124,13 @@ draw_open_project_dialog :: () {
 draw_unsaved_buffers_dialog :: () {
     ui_id := Ui_Id.unsaved_buffers;
 
-    unsaved_buffers := get_unsaved_buffer_ids();
-    if !unsaved_buffers {
-        log_error("Unsaved buffers dialog is attempted to be drawn, but no unsaved buffers present. This is a bug. Closing...");
-        close_unsaved_buffers_dialog();
-        return;
+    unsaved_buffers := unsaved_buffers_dialog.modified_buffers;
+    if !unsaved_buffers then panic_messagebox("Unsaved buffers dialog is attempted to be drawn, but no unsaved buffers present. This is a bug. Closing...");
+
+    // Additional message is assumed to be 1 line only
+    additional_message := "";
+    if unsaved_buffers_dialog.mode == .reload_workspace {
+        additional_message = "Workspace needs to reload. Unsaved files will be lost.";
     }
 
     margin  := floor(12 * dpi_scale);
@@ -2084,6 +2143,7 @@ draw_unsaved_buffers_dialog :: () {
         w = floor(clamp(screen.w * 0.3, 600 * dpi_scale, 1500 * dpi_scale)),
         h = header_height + (entry_height + margin / 2) * unsaved_buffers.count + margin + padding + button_height + margin,
     };
+    if additional_message then box_rect.h += entry_height + margin;
     box_rect.x = floor((screen.w - box_rect.w) / 2);
     box_rect.y = screen.h - box_rect.h - floor(clamp(100 * dpi_scale, 0, (screen.h - box_rect.h) / 2));
 
@@ -2117,6 +2177,17 @@ draw_unsaved_buffers_dialog :: () {
         defer pop_scissor();
 
         entry_rect := cut_top(buffers_rect, entry_height);
+
+        if additional_message {
+            Simp.draw_text(
+                font_ui,
+                xx (entry_rect.x + margin),
+                xx (entry_rect.y + (entry_rect.h - font_ui.character_height) / 2 + 2 * dpi_scale),
+                additional_message,
+                Colors.UI_DEFAULT,
+            );
+            entry_rect.y -= entry_rect.h + margin;
+        }
 
         for unsaved_buffers {
             buffer := *open_buffers[it];
@@ -2203,10 +2274,11 @@ draw_finder :: () {
     input_rect = shrink(input_rect, margin);
     input_id := get_ui_id_from_loc(parent_id = ui_id);
     label := ifx initted then "Type to search in workspace" else "Still scanning the workspace. Please wait...";
-    draw_text_input(*finder.input, input_rect, ui_id = input_id, active = true, label = label, margin_right = input_rect.h * 2);
+    color := ifx !regex_search || (regex_search && regex_is_valid) then Colors.NONE else Colors.UI_ERROR_BRIGHT;
+    draw_text_input(*finder.input, input_rect, ui_id = input_id, active = true, label = label, margin_right = input_rect.h * 2, _color = color);
 
     button_width := input_rect.h;
-    pressed, hover_match_case, hover_match_word := false, false, false;
+    pressed, hover_match_case, hover_match_word, hover_regex_search := false, false, false, false;
 
     pressed, hover_match_case = draw_text_input_modifier_button(input_id, input_rect, button_width, case_sensitive, CASE_SENSITIVE_ICON);
     if pressed {
@@ -2222,6 +2294,14 @@ draw_finder :: () {
         redraw_requested = true;
     }
 
+    input_rect.w -= button_width - 4 * dpi_scale;
+
+    pressed, hover_regex_search = draw_text_input_modifier_button(input_id, input_rect, button_width, regex_search, REGEX_SEARCH_ICON);
+    if pressed {
+        finder_toggle_regex_search();
+        redraw_requested = true;
+    }
+
     // Draw tooltips last
     tooltip := "";
     if hover_match_case {
@@ -2231,6 +2311,10 @@ draw_finder :: () {
     } else if hover_match_word {
         tooltip = "Match Whole Word";
         combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_whole_word);
+        if combo then tooltip = tprint("% (%)", tooltip, combo);
+    } else if hover_regex_search {
+        tooltip = "Regex search";
+        combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_regex_search);
         if combo then tooltip = tprint("% (%)", tooltip, combo);
     }
     if tooltip then draw_tooltip_bottom_left(tooltip, Vector2.{ x = mouse.pointer.x - input_rect.h / 2, y = input_rect.y + input_rect.h / 3 });
@@ -2373,7 +2457,7 @@ draw_finder :: () {
             // Draw code line
             {
                 match_start := entry.match_offset;
-                match_end   := min(entry.match_offset + finder.needle.count, line_range.end);  // if we have a multi-line match, we will still show only the first line
+                match_end   := min(entry.match_offset + entry.match_count, line_range.end);  // if we have a multi-line match, we will still show only the first line
                 line_start  := ifx text_start <= match_start then text_start else line_range.start;
                 chars_until_match_start := get_num_chars(array_view(buffer.bytes, line_start, match_start - line_start));
                 chars_until_match_end   := get_num_chars(array_view(buffer.bytes, line_start, match_end   - line_start));
@@ -2436,6 +2520,10 @@ draw_finder :: () {
                 if whole_word {
                     combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_whole_word);
                     label = tprint("%   Match whole word is active (% to toggle).", label, combo);
+                }
+                if regex_search {
+                    combo := key_sequence_for_action_as_string(Action_Search_Dialog.toggle_regex_search);
+                    label = tprint("%   Regex search is active (% to toggle).", label, combo);
                 }
             }
             entry_rect := cut_top(files_rect, entry_height);
@@ -2604,7 +2692,7 @@ draw_text_input :: (using input: *Text_Input, rect_: Rect, ui_id: Ui_Id, active 
     if total_text_width - scroll_x_target < cast(s32) input_rect.w then {
         scroll_x_target = max(cast(s32) total_text_width - cast(s32) input_rect.w, 0);  // always show as much text as possible
     }
-    if scroll_x_target != scroll_anim.target then start_animation(*scroll_anim, scroll_x, scroll_x_target, snappy = true);
+    if scroll_x_target != scroll_anim.target then start_animation(*scroll_anim, scroll_x, scroll_x_target);
 
     if scroll_x != scroll_anim.target {
         redraw_requested = true;

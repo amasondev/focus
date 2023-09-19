@@ -14,13 +14,20 @@ Render_API :: enum {
     #import "Windows";
 } else #if OS == .LINUX {
     LD :: #import "Linux_Display";
+    #assert(LD.JAI_STDLIB_INTEROP);
 } else #if OS == .MACOS {
     #import "Objective_C";
     #import "Objective_C/AppKit";
 }
 
 #if render_api == .OPENGL {
-    #import "GL";
+    #if OS != .LINUX {
+        #import "GL";
+    } else {
+        GL :: #import "Linux_Display/GL";
+        using GL.gl_procs;
+        DumpGLErrors :: GL.DumpGLErrors;
+    }
 
     #load "backend/gl.jai";
 }

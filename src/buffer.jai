@@ -428,6 +428,8 @@ recalculate_colors :: (buffer: *Buffer) {
         case .Focus_Config; highlight_focus_config_syntax(buffer);
         case .Glsl;         highlight_glsl_syntax(buffer);
         case .Worklog;      highlight_worklog(buffer);
+        case .Python;       highlight_python_syntax(buffer);
+        case .RenPy;        highlight_renpy_syntax(buffer);
     }
 }
 
@@ -866,7 +868,7 @@ find_or_create_buffer :: (path: string) -> buffer_id: s64, created: bool {
 get_buffer_name :: (buffer: Buffer) -> string {
     // NOTE: After deleting using "Delete Current File", `has_file` could be false while buffer.file still exists (because we don't override it).
     //       So if we fail the `has_file` check, check the `file.full_path` as well to see if there is still a valid name that the buffer can draw.
-    if buffer.has_file || buffer.file.full_path return buffer.file.name;
+    if buffer.has_file || buffer.file.full_path || buffer.readonly return buffer.file.name;
 
     for 0..buffer.line_starts.count-2 {
         line := trim(get_real_line_as_string(buffer, xx it), "\t \r\n");
@@ -1171,6 +1173,8 @@ Buffer :: struct {
         Focus_Config;
         Glsl;
         Worklog;
+        Python;
+        RenPy;
     } = .Plain_Text;
 
     Edit_Group :: struct {

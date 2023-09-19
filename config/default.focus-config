@@ -59,6 +59,10 @@ line_wrap_is_on_by_default:             false
 show_line_numbers:                      false
 colored_titlebar:                       true   # Windows 11+ only
 hide_mouse_when_typing:                 true
+highlight_line_with_cursor:             false
+draw_indent_guides:                     false
+auto_surround_with_brackets_and_quotes: false
+
 
 [[keymap]]
 
@@ -70,6 +74,7 @@ hide_mouse_when_typing:                 true
 Alt-F4                      quit
 
 Ctrl-D                      select_word_or_create_another_cursor
+Ctrl-Shift-A                select_all_occurrences
 
 Ctrl-Shift-D                duplicate_lines
 
@@ -180,6 +185,7 @@ Shift-Enter                 move_up  # an alternative way to move
 
 Alt-C                       toggle_case_sensitive
 Alt-W                       toggle_whole_word
+Alt-R                       toggle_regex_search
 
 
 [common]
@@ -216,6 +222,8 @@ Ctrl-W                      close_current_editor
 Ctrl-Shift-W                close_other_editor
 
 Ctrl-Shift-L                toggle_expand
+
+F11                         toggle_fullscreen
 
 # {Shift}- means shift is optional, the key combination will still be matched.
 {Shift}-ArrowUp             move_up

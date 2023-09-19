@@ -10,6 +10,8 @@ TODO.md
 
 projects/
 temp/
+build_release/
+build_debug/
 
 focus
 focus_debug

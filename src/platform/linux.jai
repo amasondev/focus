@@ -133,7 +133,14 @@ DONE;
     if equal_nocase(backend_s, "prefer-x11") then backend = .PREFER_X11;
     if equal_nocase(backend_s, "wayland") then backend = .FORCE_WAYLAND;
     if equal_nocase(backend_s, "x11") then backend = .FORCE_X11;
-    LD.init(backend, app_id);
+
+    gl_backend := LD.GL_BACKEND_CHOICE.AUTOSELECT;
+    cstr = getenv("FOCUS_LD_GL_BACKEND");
+    backend_s = ifx cstr then to_string(cstr) else "";
+    if equal_nocase(backend_s, "glx") then gl_backend = .GLX;
+    if equal_nocase(backend_s, "egl") then gl_backend = .EGL;
+
+    LD.init_with_stdlib_interop(desired_backend=backend, desired_gl_backend=gl_backend, app_id=app_id);
 
     active_backend := LD.active_backend();
     assert(active_backend != .UNINITIALIZED);
@@ -220,11 +227,16 @@ platform_kill_refresh_timer :: (window: Window_Type) {
 }
 
 platform_enumerate_logical_drives :: () -> [] string {
-    return .["/"];
+    logical_drives: [..]string;
+
+    pw := getpwuid(getuid());
+    array_add(*logical_drives, "/");
+    array_add(*logical_drives, to_string(pw.pw_dir));
+
+    return logical_drives;
 }
 
 platform_get_save_file_name :: (name := "") -> string, bool {
-    print("name = '%'\n", name);
     return "", false;
 }
 

@@ -278,6 +278,20 @@ is_separator_char :: inline (ch: u8) -> bool {
         ch == #char "." || ch == #char "<" || ch == #char ">" || ch == #char "/" || ch == #char "\"" || ch == #char "\\";
 }
 
+is_balanceable_char :: (ch: u32) -> bool {
+    return ch == #char "{" || ch == #char "(" || ch == #char "[" || ch == #char "\"";
+}
+
+get_balancing_char :: (ch: u32) -> u32 {
+    if ch == {
+        case #char "{";  return #char "}";
+        case #char "(";  return #char ")";
+        case #char "[";  return #char "]";
+        case #char "\""; return #char "\"";
+        case; return 0;
+    }
+}
+
 get_char_type :: (ch: u32) -> Char_Type {
     if is_word_char(ch) {
         return .word;
@@ -288,6 +302,13 @@ get_char_type :: (ch: u32) -> Char_Type {
     } else {
         return .other;
     }
+}
+
+is_all_word_chars :: (s: string) -> bool {
+    for byte : to_bytes(s) {
+        if !is_word_char(byte) then return false;
+    }
+    return true;
 }
 
 is_all_whitespace :: (s: string) -> bool {
@@ -306,6 +327,18 @@ count_whitespace :: (bytes: [] u8, start_offset: s64, max_offset: s64, spaces :=
     return cast(s32) (max_offset - start_offset);
 }
 
+get_visual_indent_in_spaces :: (line: string, spaces := " \t") -> indent: int {
+    indent := 0;
+    for byte : to_bytes(trim_right(line)) {
+        if byte == {
+            case #char " ";     indent += 1;
+            case #char "\t";    indent += TAB_SIZE - (indent % TAB_SIZE);
+            case;               break;
+        }
+    }
+    return indent;
+}
+
 get_tmp_spaces :: (num: int) -> string {
     spaces := talloc_string(num);
     memset(spaces.data, cast(u8) #char " ", num);
@@ -318,28 +351,14 @@ get_tmp_tabs :: (num: int) -> string {
     return tabs;
 }
 
-start_animation :: (anim: *Tween_Animation(T), start: $T, target: T, speed: Time = xx 0.0, $snappy := false) {
+start_animation :: (anim: *Tween_Animation(T), start: $T, target: T, speed: Time = xx 0.0) {
     anim.start  = start;
     anim.target = target;
     if speed > 0 then anim.speed = speed;
 
-    #if OS == .LINUX {
-        // Don't restart the animation at the current frame if it's already started.
-        // But still cap it's starting time at just a single frame delta to be conservative.
-        // This lets us start animation smoothly, as in the "else" branch below, but
-        // continue in a snappy way as we scroll.
-        if anim.started_at {
-            anim.started_at = frame_time - MAX_FRAME_DT;
-            return;
-        }
-    }
-    #if snappy {
-        // Pretend the animation started last frame so we start moving right away
-        anim.started_at = frame_time - MAX_FRAME_DT;
-    } else {
-        // Things will start moving next frame - but usually in a more smooth way
-        anim.started_at = frame_time;
-    }
+    // Pretend the animation started last frame so we start moving right away.
+    // If the current frame was t=0, then the movement would simply be delayed one frame.
+    anim.started_at = frame_time - frame_dt;
 }
 
 get_animation_value :: (using anim: Tween_Animation($T)) -> T {
@@ -424,7 +443,9 @@ is_white_space :: inline (char : u8) -> bool #no_aoc {
     return cast,no_check(bool) result;
 }
 
-#scope_export
+starts_with :: inline (s: string, ch: u8) -> bool {
+    return (s.count >= 1) && (s[0] == ch);
+}
 
 Tween_Animation :: struct(T: Type) {
     start, target: T;

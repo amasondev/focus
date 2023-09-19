@@ -34,6 +34,7 @@ __pycache__
 .pyc .rpyc
 .DS_Store .dmg
 
+
 [[settings]]
 
 maximize_on_start:                      false
@@ -56,6 +57,10 @@ max_editor_width:                       -1
 editor_history_size:                    1024
 line_wrap_is_on_by_default:             false
 show_line_numbers:                      false
+hide_mouse_when_typing:                 true
+highlight_line_with_cursor:             false
+draw_indent_guides:                     false
+auto_surround_with_brackets_and_quotes: false
 
 
 [[keymap]]
@@ -67,6 +72,7 @@ show_line_numbers:                      false
 # Key combination           Action
 
 Cmd-D                       select_word_or_create_another_cursor
+Ctrl-Shift-A                select_all_occurrences
 
 Cmd-Shift-D                 duplicate_lines
 
@@ -126,8 +132,8 @@ Alt-Shift-I                 add_cursors_to_line_ends
 Alt-Shift-Ctrl-I            add_cursors_to_line_starts
 
 Enter                       break_line
-Ctrl-Enter                  new_line_below_without_breaking
-Ctrl-Shift-Enter            new_line_above_without_breaking
+Cmd-Enter                   new_line_below_without_breaking
+Cmd-Shift-Enter             new_line_above_without_breaking
 
 Cmd-1                       switch_to_left_editor
 Cmd-2                       switch_to_right_editor
@@ -175,6 +181,7 @@ Shift-Enter                 move_up  # an alternative way to move
 
 Cmd-Alt-C                   toggle_case_sensitive
 Cmd-Alt-W                   toggle_whole_word
+Cmd-Alt-R                   toggle_regex_search
 
 [common]
 
@@ -209,6 +216,8 @@ Cmd-W                       close_current_editor
 Cmd-Shift-W                 close_other_editor
 
 Cmd-Shift-L                 toggle_expand
+
+F11                         toggle_fullscreen
 
 # {Shift}- means shift is optional, the key combination will still be matched.
 {Shift}-ArrowUp             move_up

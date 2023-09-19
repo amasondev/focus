@@ -9,11 +9,12 @@ highlight_jai_syntax :: (using buffer: *Buffer) {
 
         // Maybe retroactively highlight a function
         if token.type == .punctuation && token.punctuation == .l_paren {
-            // Handle "func :: ("
             before_prev, prev := last_tokens[0], last_tokens[1];
             if prev.type == .identifier {
+                // Handle "func("
                 memset(colors.data + prev.start, xx Code_Color.FUNCTION, prev.len);
             } else if before_prev.type == .identifier && prev.type == .operation && prev.operation == .double_colon {
+                // Handle "func :: ("
                 memset(colors.data + before_prev.start, xx Code_Color.FUNCTION, before_prev.len);
             }
         } else if token.type == .keyword && token.keyword == .kw_inline {
@@ -599,7 +600,7 @@ COMPILER_DIRECTIVES :: string.[
     "place", "placeholder", "poke_name", "procedure_of_call", "program_export", "run", "runtime_support",
     "scope_export", "scope_file", "scope_module", "specified", "string", "symmetric", "this", "through", "type",
     "type_info_no_size_complaint", "type_info_none", "type_info_procedures_are_void_pointers",
-    "compile_time", "no_debug",
+    "compile_time", "no_debug", "procedure_name",
 ];
 
 // TODO: implement
@@ -638,7 +639,7 @@ Keyword_Token :: struct {
 
 KEYWORD_MAP :: #run -> Table(string, Keyword_Token) {
     table: Table(string, Keyword_Token);
-    size := 2 * (KEYWORDS.count + TYPE_KEYWORDS.count + VALUE_KEYWORDS.count);
+    size := 10 * (KEYWORDS.count + TYPE_KEYWORDS.count + VALUE_KEYWORDS.count);
     init(*table, size);
 
     #insert -> string {
