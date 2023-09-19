@@ -144,8 +144,8 @@ active_editor_handle_event :: (event: Input.Event, action: Action_Editors) -> ha
     if action == {
         // General actions (which are not associated with any cursor)
         case .toggle_expand;                    toggle_expand(!editors.expanded);
-        case .search_in_buffer;                 open_search_bar(editor, buffer);
-        case .search_in_buffer_dropdown_mode;   open_search_bar(editor, buffer, .dropdown);
+        case .search_in_buffer;                 open_search_bar(editor, buffer, remember_cursor_position = false);
+        case .search_in_buffer_dropdown_mode;   open_search_bar(editor, buffer, .dropdown, remember_cursor_position = false);
         case .close_current_editor;             close_editor(.current);
         case .close_other_editor;               close_editor(.other);
         case .close_left_editor;                close_editor(.left);
