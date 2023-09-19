@@ -72,7 +72,7 @@ auto_surround_with_brackets_and_quotes: false
 
 # Key combination           Action
 Alt-F4                      quit
-
+Escape                      clear_search_results
 Ctrl-D                      select_word_or_create_another_cursor
 Ctrl-Shift-A                select_all_occurrences
 

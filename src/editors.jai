@@ -150,6 +150,7 @@ active_editor_handle_event :: (event: Input.Event, action: Action_Editors) -> ha
         case .close_other_editor;               close_editor(.other);
         case .close_left_editor;                close_editor(.left);
         case .close_right_editor;               close_editor(.right);
+        case .clear_search_results;             clear_search_results(editor);
         case .save;                             save_buffer(editor, buffer);
         case .save_as;                          save_buffer(editor, buffer, save_new_file = true);
         case .save_all;                         save_all   (editor, buffer);
@@ -413,7 +414,9 @@ editors_open_file :: (path: string, placement: Editor_Placement = .in_place) {
     }
 
     if !file_is_watched(full_path) start_watching_file(full_path);
-
+    if !current_project_name {
+        find_and_merge_config_upwards(path);
+    }
     editors_open_buffer(buffer_id, placement);
 }
 
@@ -3071,6 +3074,11 @@ toggle_line_wrap :: (editor: *Editor) {
 toggle_line_numbers :: () {
     config.settings.show_line_numbers = !config.settings.show_line_numbers;
     redraw_requested = true;
+}
+
+clear_search_results :: (using editor: *Editor) {
+    reset_search_results(*editor.search_bar);
+    editor.refresh_highlights = true;
 }
 
 free_editor :: (using editor: *Editor) {

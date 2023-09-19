@@ -36,6 +36,10 @@ load_project_config :: (project: string = "") -> success: bool, changed: bool, t
     return success, changed, there_were_warnings;
 }
 
+find_and_merge_config_upwards :: (path: string) {
+
+}
+
 refresh_config :: (path: string) {
     old_workspace_dirs := array_copy_tmp(config.workspace.workspace_dirs);
 
