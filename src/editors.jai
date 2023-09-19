@@ -778,8 +778,8 @@ close_search_bar :: inline (editor: *Editor, jump_to_original_cursor := false, j
         editor.scroll_to_cursor = .yes;
     }
 
-    reset_search_results(*editor.search_bar);
-    editor.refresh_highlights = true;
+    //reset_search_results(*editor.search_bar);
+    //editor.refresh_highlights = true;
 }
 
 search_bar_toggle_expand :: (using editor: *Editor) {
