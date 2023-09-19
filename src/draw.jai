@@ -772,6 +772,21 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
 
         cursors_active := editor_is_active && active_global_widget == .editors;
 
+        // Draw search results
+        if search_bar.results {
+            for search_bar.results {
+                start, end := it.offset, it.offset + it.count;
+                if end   < visible_offset_range.start continue;
+                if start > visible_offset_range.end   break;
+
+                range: Coords_Range = ---;
+                range.start = offset_to_coords(editor, buffer, it.offset);
+                range.end   = offset_to_coords(editor, buffer, it.offset + it.count);
+                color := ifx search_bar.selected_result == it_index then Colors.SEARCH_RESULT_ACTIVE else Colors.SEARCH_RESULT_INACTIVE;
+                draw_range(range, editor, buffer, visible_lines_start, visible_lines_end, text_origin, color);
+            }
+        }
+
         if !search_bar_is_open(editor) {
             Simp.set_shader_for_rects();
             for cursor : cursors {
@@ -803,21 +818,6 @@ draw_editor :: (editor_id: s64, main_area: Rect, footer_height: float, ui_id: Ui
                     };
                     draw_rect(line_rect, Colors.BACKGROUND_BRIGHT);
                 }
-            }
-        }
-
-        // Draw search results
-        if search_bar.results {
-            for search_bar.results {
-                start, end := it.offset, it.offset + it.count;
-                if end   < visible_offset_range.start continue;
-                if start > visible_offset_range.end   break;
-
-                range: Coords_Range = ---;
-                range.start = offset_to_coords(editor, buffer, it.offset);
-                range.end   = offset_to_coords(editor, buffer, it.offset + it.count);
-                color := ifx search_bar.selected_result == it_index then Colors.SEARCH_RESULT_ACTIVE else Colors.SEARCH_RESULT_INACTIVE;
-                draw_range(range, editor, buffer, visible_lines_start, visible_lines_end, text_origin, color);
             }
         }
 
