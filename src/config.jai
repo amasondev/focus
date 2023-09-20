@@ -336,7 +336,7 @@ Config :: struct {
 }
 
 Workspace :: struct {
-    workspace_dirs:                  [] string;
+    workspace_dirs:                  [..] string;
     ignore_dirs:                     [] string;
     allow_file_extensions:           [] string;
     ignore_file_extensions:          [] string;

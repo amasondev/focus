@@ -26,7 +26,7 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
         return handled;
     } else if event.type == .TEXT_INPUT {
         char := event.utf32;
-        if open_file_dialog.mode == .navigate && (char == #char "/" || char == #char "\\") return true;  // these are special chars, don't handle
+        if open_file_dialog.mode != .search && (char == #char "/" || char == #char "\\") return true;  // these are special chars, don't handle
 
         text_input_type_char(*open_file_dialog.input, char);
         refresh_entries(clear_input = false);
@@ -119,10 +119,15 @@ open_file_dialog_open_entry :: (selected: s64, placement: Editor_Placement, fold
             refresh_entries();
 
         case .project_dir;
-            clear_path_chunks();
-            array_add(*path_chunks, copy_string(entry.name));
-            root_dir = entry.full_path;
-            refresh_entries();
+            if (mode == .directory) {
+                open_directory_as_project(entry.file);
+                hide_open_file_dialog();
+            } else {
+                clear_path_chunks();
+                array_add(*path_chunks, copy_string(entry.name));
+                root_dir = entry.full_path;
+                refresh_entries();
+            }
 
         case .folder;
             array_add(*path_chunks, copy_string(entry.name));
@@ -195,7 +200,7 @@ move_cursor :: (delta: s64, wrap := false, snap := true) {
 
 pop_directory :: () -> handled: bool {
     using open_file_dialog;
-    if mode != .navigate || input.text || !path_chunks return false;
+    if mode == .search || input.text || !path_chunks return false;
 
     last := pop(*path_chunks);
     free(last);
@@ -258,6 +263,63 @@ refresh_entries :: (clear_input := true) {
     filter_chars := decode_utf8_string_to_temp_char_substrings(to_string(input.text));
 
     if #complete mode == {
+        case .directory;
+            if !path_chunks {
+                for platform_enumerate_logical_drives() {
+                    name := copy_string(it);
+
+                    score, name_highlights := fuzzy_match(name, filter_chars);
+                    if score < 0 continue;
+
+                    entry := array_add(*entries.filtered);
+                    entry.type = .drive;
+                    entry.full_path = "";
+                    entry.name = name;
+                    entry.entry_name = name;
+                    entry.path = "";
+                    entry.icon = .drive;
+                    entry.project_dir_id = 127;
+                    entry.name_highlights = name_highlights;
+                    entry.path_highlights = .[];
+
+                    dir_id_part: u64 = (cast,trunc(u64) (127 - entry.project_dir_id)) << 56;
+                    score_part:  u64 = (cast,trunc(u64) score)                        << 16;
+                    entry.sort_key = dir_id_part | score_part;
+                }
+            } else {
+                // Add the '.' current directory entry for selecting the desired directory
+                dir_path := join(..path_chunks, separator = "/");
+                array_add(*entries.filtered, Entry.{
+                    file = File_Info.{
+                        full_path = dir_path,
+                        name = ".",
+                        path = "",
+                        icon = .folder,
+                    },
+                    entry_name = ".",
+                    type = .project_dir,
+                    name_highlights = .[false],
+                    path_highlights = .[false],
+                    sort_key = 1 << 63
+                });
+                // Filter current files
+                for current_files {
+                    score, name_highlights := fuzzy_match(it.name, filter_chars);
+                    if it.type != .folder continue; // only show folders.
+                    if score < 0 continue;
+
+                    entry := array_add(*entries.filtered);
+                    <<entry = it;
+
+                    entry.entry_name = entry.name;
+                    entry.name_highlights = name_highlights;
+                    entry.path_highlights = .[];
+
+                    score_part:  u64 = (cast,trunc(u64) score)                   << 16;
+                    entry.sort_key = score_part;
+                }
+            }
+
         case .navigate;
             if !path_chunks {
                 // Display project dirs and drives
@@ -389,7 +451,7 @@ refresh_entries :: (clear_input := true) {
 
 scan_current_folder :: () {
     using open_file_dialog;
-    if mode != .navigate || !path_chunks return;
+    if mode == .search || !path_chunks return;
 
     dir_path: string;
     if root_dir {
@@ -484,7 +546,7 @@ Open_File_Dialog :: struct {
 
     path_chunks: [..] string;
     root_dir: string;
-    current_files: [..] Entry;  // files in the current folder (used in .navigate mode only)
+    current_files: [..] Entry;  // files in the current folder (used in .directory and .navigate modes only)
 
     entries: struct {
         filtered: [..] Entry;
@@ -504,6 +566,7 @@ Open_File_Dialog :: struct {
     Mode :: enum {
         search;
         navigate;
+        directory;
     }
 }
 

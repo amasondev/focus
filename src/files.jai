@@ -198,4 +198,5 @@ File_Icon :: enum u16 {
     shell   :: 0xf2d0;
 
     dots    :: 0xf141;
+    dot     :: 0x002e;
 }

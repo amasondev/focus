@@ -59,6 +59,22 @@ open_selected_project :: () {
     }
 }
 
+open_directory_as_project :: (file : File_Info) {
+    success := load_global_config();
+    if success {
+        should_reload_workspace = true;
+        if unsaved_buffers_exist() {
+            show_unsaved_buffers_dialog(.reload_workspace);
+            should_reload_workspace = false;
+        }
+        project_config_path = "";
+        //config.workspace.workspace_dirs = .[ file.full_path ];
+        array_add(*config.workspace.workspace_dirs, file.full_path);
+    } else {
+        add_user_error("Couldn't close project because the global config failed to load", dismiss_in_seconds = 10);
+    }
+}
+
 #scope_file
 
 refresh_entries :: () {

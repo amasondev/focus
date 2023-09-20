@@ -137,6 +137,7 @@ commands := #run Command.[
     .{ .show_open_file_dialog_in_navigate_mode_from_root,   "Navigate To File From Root",         0, .None },
 
     .{ .switch_to_project,                                  "Switch To Project",                  0, .None },
+    .{ .open_directory_as_project,                          "Open Directory as a Project",        0, .None },
     .{ .close_project,                                      "Close Project",                      0, .None },
     .{ .open_projects_directory,                            "Open Directory With Project Files",  0, .None },
     .{ .open_project_config,                                "Open Project Config",                0, .None },

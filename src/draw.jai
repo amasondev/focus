@@ -1566,7 +1566,7 @@ draw_open_file_dialog :: () {
     _pad, files_rect = cut_bottom(files_rect, padding);
 
     // Draw files
-    if initted || mode == .navigate {
+    if initted || mode != .search {
         using entries;
 
         // Remember how many fits per page
