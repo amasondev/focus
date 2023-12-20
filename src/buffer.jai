@@ -757,6 +757,7 @@ strip_trailing_whitespace :: (using buffer: *Buffer, buffer_id: s64) {
         cursor.pos = real_coords_to_offset(buffer, pos);
         cursor.sel = real_coords_to_offset(buffer, sel);
     }
+    refresh_all_editors_for_buffer(buffer_id);
 }
 
 remember_last_modtime_and_size :: (using buffer: *Buffer) {
