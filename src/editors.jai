@@ -547,7 +547,7 @@ editors_open_buffer :: (buffer_id: s64, placement: Editor_Placement = .in_place)
             }
     }
     buffer := *open_buffers[buffer_id];
-    if buffer.num_times_opened < 255 then buffer.num_times_opened += 1;
+    buffer.last_opened_time = frame_time;
 
     make_editor_active(editors.active);
     maybe_mark_buffer_as_deleted(buffer_id);  // check in case we missed that it's deleted
@@ -1988,9 +1988,9 @@ move_cursors_to_matching_bracket :: (editor: *Editor, buffer: Buffer) {
 
         line := offset_to_real_line(buffer, offset);
         cursor.pos = xx offset;
+        editor.cursor_moved = .jumped;
     }
 
-    editor.cursor_moved = .unimportant;
 }
 
 move_to_file_start :: (editor: *Editor, buffer: Buffer) {
