@@ -35,9 +35,9 @@ main :: () {
     if !projects_dir_existed then write_entire_file(tprint("%/Example Project.focus-config", projects_dir), EXAMPLE_PROJECT_FILE_DATA);
 
     init_file_watcher();
+    init_buffers();
     load_global_config(fallback_to_default_on_failure = true);
     init_workspace();
-    init_buffers();
     init_build_system();
 
     window_x, window_y, window_width, window_height = platform_get_centered_window_dimensions(config.settings.open_on_the_biggest_monitor);
@@ -353,6 +353,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .move_to_next_buffer;                              move_to_next_editor_history    (by_buffer = true);  return true;
 
         case .toggle_build_panel;                               toggle_build_panel();                               return true;
+
+        case .build_kill_running_command;                       build_kill_running_command();                       return true;
 
         // TODO: search_in_buffer
         case .search_in_project;
@@ -771,6 +773,8 @@ dont_ignore_next_window_resize := false;
 #load "files.jai";
 #load "workspace.jai";
 #load "config.jai";
+#load "config_parser.jai";
+#load "config_migrator.jai";
 #load "colors.jai";
 #load "keymap.jai";
 #load "session.jai";

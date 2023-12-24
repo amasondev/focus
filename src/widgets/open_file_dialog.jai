@@ -299,10 +299,10 @@ refresh_entries :: (clear_input := true) {
                                                          // still want to see it here
 
         buffer_name := get_buffer_name(buffer);
-        name_score, name_highlights := fuzzy_match(buffer_name,      filter);
-        path_score, path_highlights := fuzzy_match(buffer.file.path, filter);
+        name_score, name_highlights, exact_match := fuzzy_match(buffer_name,      filter);
+        path_score, path_highlights              := fuzzy_match(buffer.file.path, filter, only_exact=exact_match);
         score := 200 * name_score + path_score;  // name score is much more important
-        if score < 0 continue;
+        if score <= 0 && filter.full_string continue;
 
         entry := array_add(*entries.filtered);
         entry.buffer_id = buffer_id;
@@ -318,7 +318,9 @@ refresh_entries :: (clear_input := true) {
         //dir_id_part:     u64 = (cast,trunc(u64) (63 - buffer.file.project_dir_id))  << 22;
         dir_id_part:     u64 = (cast,trunc(u64) (127 - entry.project_dir_id))       << 48;
         score_part:      u64 = (cast,trunc(u64) score)                              << 16;
+        length_part:     u64 = (cast,trunc(u64) (400 - buffer_name.count))          <<  8;
         times_open_part: u64 = (cast,trunc(u64) buffer.last_opened_time)            <<  0;
+        if !filter.full_string then length_part = 0;  // don't sort by length when no filtering is applied
         entry.sort_key = dir_id_part | score_part | times_open_part;
 
         if buffer.modified         then { entry.flags |= .MODIFIED;         entry.sort_key |= top_priority_bit; }
@@ -334,7 +336,8 @@ refresh_entries :: (clear_input := true) {
                 // Display project dirs and drives
                 for project_dirs {
                     score, name_highlights := fuzzy_match(it.name, filter);
-                    if score < 0 continue;
+                    if score <= 0 && filter.full_string continue;
+                    if filter.full_string then score -= xx it.name.count;  // prefer shorter name all other things being equal
 
                     entry := array_add(*entries.filtered);
                     entry.type = .project_dir;
@@ -355,7 +358,8 @@ refresh_entries :: (clear_input := true) {
                     name := copy_string(it);
 
                     score, name_highlights := fuzzy_match(name, filter);
-                    if score < 0 continue;
+                    if score <= 0 && filter.full_string continue;
+                    if filter.full_string then score -= xx name.count;  // prefer shorter name all other things being equal
 
                     entry := array_add(*entries.filtered);
                     entry.type = .drive;
@@ -376,7 +380,8 @@ refresh_entries :: (clear_input := true) {
                 // Filter current files
                 for current_files {
                     score, name_highlights := fuzzy_match(it.name, filter);
-                    if score < 0 continue;
+                    if score <= 0 && filter.full_string continue;
+                    if filter.full_string then score -= xx it.name.count;  // prefer shorter name all other things being equal
 
                     entry := array_add(*entries.filtered);
                     <<entry = it;

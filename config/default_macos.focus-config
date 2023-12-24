@@ -58,12 +58,13 @@ max_editor_width:                       -1
 editor_history_size:                    1024
 line_wrap_is_on_by_default:             false
 show_line_numbers:                      false
-hide_mouse_when_typing:                 true
+hide_mouse_when_typing:                 false
 highlight_line_with_cursor:             false
 draw_indent_guides:                     false
 auto_surround_with_brackets_and_quotes: false
 auto_close_brackets:                    false
 show_cursors_off_screen:                true
+persist_local_search_results:           false  # if true, search results will stay highlighted and you have to dismiss them using the `escape` action
 
 build_panel_stays_in_one_place:         false  # if true, the build panel will flip to the inactive pane in two pane layouts
 build_panel_line_wrap_always_on:        true
@@ -80,7 +81,7 @@ build_panel_height_percent:             50
 # Key combination           Action
 
 Cmd-D                       select_word_or_create_another_cursor
-Ctrl-Shift-A                select_all_occurrences
+Cmd-Shift-A                 select_all_occurrences
 
 Cmd-Shift-D                 duplicate_lines
 
@@ -150,9 +151,9 @@ Cmd-Shift-N                 create_new_file_on_the_side
 
 Alt-Shift-ArrowUp           create_cursor_above
 Alt-Shift-ArrowDown         create_cursor_below
-Alt-A                       align_cursors
+Alt-Cmd-A                   align_cursors
 
-Alt-Z                       toggle_line_wrap
+Alt-Cmd-Z                   toggle_line_wrap
 
 
 [open file dialog]
@@ -218,7 +219,7 @@ Escape                      escape  # combines close_dialog and remove_additiona
 
 Cmd-Shift-L                 toggle_expand
 
-Ctrl-B                      toggle_build_panel
+Cmd-B                       toggle_build_panel
 
 F11                         toggle_fullscreen
 
