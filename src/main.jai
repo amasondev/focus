@@ -889,8 +889,8 @@ DOUBLE_CLICK_TOLERANCE :: 2;    // how many pixels between the click locations a
 
 // Embed default fonts
 FONT         :: #run load_font("FiraCode-Retina.ttf");
-FONT_UI      :: #run load_font("OpenSans-Regular.ttf");
-FONT_UI_BOLD :: #run load_font("OpenSans-SemiBold.ttf");
+FONT_UI      :: #run load_font("segoeui.ttf");
+FONT_UI_BOLD :: #run load_font("segoeuib.ttf");
 FONT_ICONS   :: #run load_font("font-awesome/Font Awesome 6 Free-Solid-900.otf");
 
 MIN_FONT_SIZE :: 4;
@@ -900,6 +900,9 @@ MAX_FONT_SIZE :: 30;  // setting a larger size has caused freetype to crash - no
 load_font :: (name: string) -> Embedded_Font {
     path := tprint("fonts/%", name);
     data, success := read_entire_file(path);
+    if !success {
+        data, success = read_entire_file(tprint("%/%", platform_get_fonts_dir(), name));
+    }
     assert(success, "Couldn't load font '%'", path);
 
     return Embedded_Font.{ name = name, data = data};
