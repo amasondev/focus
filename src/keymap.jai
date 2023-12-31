@@ -259,8 +259,12 @@ ACTIONS_COMMON :: string.[
     "quit",
 
     "open_project",
-    "switch_to_project",  // same as open_project, renaming for consistency
+    "switch_to_project",  // alias of open_project
     "close_project",
+
+    "choose_theme",
+    "edit_current_theme",
+
     "open_projects_directory",
     "open_global_config",
     "open_project_config",
@@ -276,10 +280,12 @@ ACTIONS_COMMON :: string.[
     "search_in_buffer_dropdown_mode",
     "search_in_project",
     "go_to_line",
-    "show_open_file_dialog_in_search_mode",
-    "show_open_file_dialog_in_navigate_mode",
-    "show_open_file_dialog_in_navigate_mode_from_root",
-    "show_open_file_dialog_in_open_editors_mode",
+
+    "open_file_by_name",
+    "navigate_to_file",
+    "navigate_to_file_from_root",
+    "switch_between_open_files",
+
     "copy",
     "cut",
     "paste",

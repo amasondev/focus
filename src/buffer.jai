@@ -645,11 +645,12 @@ save_buffer :: (using buffer: *Buffer, buffer_id: s64) {
         error_when_saving = true;
     }
     remember_last_modtime_and_size(buffer);
-    update_window_title(open_editors[editors.active].buffer_id);
+    if editors.active >= 0 && editors.active < open_editors.count then update_window_title(open_editors[editors.active].buffer_id);
 
     // The config will attempt to refresh again on a file watcher message, but it should exit early because it will be unchanged.
     // We're doing it here because this way we always refresh right away, without waiting for a message to wake us up
     if is_our_config_file(buffer.file.full_path) refresh_config(buffer.file.full_path);
+    if is_current_theme(buffer.file.full_path) refresh_current_theme();
 
     redraw_requested = true;
 }
@@ -923,6 +924,7 @@ refresh_buffer_from_disk :: (path: string) {
     }
 
     if is_our_config_file(path) refresh_config(path);
+    if is_current_theme(path)   refresh_current_theme();
 
     buffer_id, created := find_or_create_buffer(path);
     if created return;
@@ -1082,6 +1084,7 @@ unsaved_buffers_exist :: () -> bool {
 }
 
 remove_all_buffers :: () {
+    array_reset_keeping_memory(*most_recent_buffers);
     deinit(*buffers_table);
     for * open_buffers free_buffer(it);
     bucket_array_reset(*open_buffers);
@@ -1151,6 +1154,7 @@ get_highlighter_function :: (lang: Buffer.Lang) -> Highlighter_Function {
         case .C;            return highlight_c_syntax;
         case .CSharp;       return highlight_csharp_syntax;
         case .Focus_Config; return highlight_focus_config_syntax;
+        case .Focus_Theme;  return highlight_focus_config_syntax;
         case .Glsl;         return highlight_glsl_syntax;
         case .Golang;       return highlight_golang_syntax;
         case .Lua;          return highlight_lua_syntax;
@@ -1325,6 +1329,7 @@ Buffer :: struct {
         C;
         CSharp;
         Focus_Config;
+        Focus_Theme;
         Glsl;
         Golang;
         Lua;

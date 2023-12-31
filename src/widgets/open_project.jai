@@ -27,12 +27,9 @@ open_project_dialog: Open_Project_Dialog;
 
 Open_Project_Dialog :: struct {
     using #as generic_dialog: Generic_Choice_Dialog(Project_Config);
-    generic_dialog.global_widget_id = .open_project_dialog;
-    generic_dialog.refresh_entries  = open_project_refresh_entries;
-    generic_dialog.open_entry_in_place     = open_selected_project;
-    generic_dialog.open_entry_on_the_side  = open_selected_project;
-    generic_dialog.open_entry_on_the_left  = open_selected_project;
-    generic_dialog.open_entry_on_the_right = open_selected_project;
+    generic_dialog.global_widget_id    = .open_project_dialog;
+    generic_dialog.refresh_entries     = open_project_refresh_entries;
+    generic_dialog.open_entry_in_place = open_selected_project;
 };
 
 #scope_file
@@ -43,17 +40,13 @@ open_project_refresh_entries :: (filter: Fuzzy_Filter) {
 
     project_configs: [..] Project_Config;
 
-    // Get all session dirs
     visitor :: (info: *File_Visit_Info, project_configs: *[..] Project_Config) {
         if !ends_with_nocase(info.full_name, ".focus-config") return;
 
         full_path := copy_string(info.full_name);
         path, basename, extension, name := path_decomp(full_path);
 
-        array_add(project_configs, Project_Config.{
-            name = basename,
-            path = full_path,
-        });
+        array_add(project_configs, Project_Config.{ name = basename, path = full_path });
     }
     visit_files(projects_dir, recursive = true, *project_configs, visitor, visit_files = true, visit_directories = false);
 

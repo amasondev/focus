@@ -27,12 +27,16 @@ main :: () {
 
     temp_dir     = sprint("%/temp",     data_dir);
     projects_dir = sprint("%/projects", config_dir);
+    themes_dir   = sprint("%/themes",   config_dir);
 
     projects_dir_existed := file_exists(projects_dir);
 
     if !make_directory_if_it_does_not_exist(projects_dir) then panic_messagebox("Couldn't create folder %. Is the directory writable?", projects_dir);
     if !make_directory_if_it_does_not_exist(temp_dir)     then panic_messagebox("Couldn't create folder % for temporary files. Is the directory writable?", temp_dir);
+    if !make_directory_if_it_does_not_exist(themes_dir)   then panic_messagebox("Couldn't create folder % for themes. Is the directory writable?", themes_dir);
     if !projects_dir_existed then write_entire_file(tprint("%/Example Project.focus-config", projects_dir), EXAMPLE_PROJECT_FILE_DATA);
+
+    fill_in_missing_default_themes();
 
     init_file_watcher();
     init_buffers();
@@ -222,7 +226,7 @@ main :: () {
                         if event.key_pressed then last_press = frame_time;
                     }
 
-                case .MOUSE_WHEEL;
+                case .MOUSE_V_WHEEL;
                     #if OS != .MACOS {
                         if ctrl_or_cmd_pressed() {
                             if event.wheel_delta < 0  {
@@ -245,26 +249,27 @@ main :: () {
 
             // Maybe handle a common action that applies to all widgets
             handled := false;
-            action := map_event_to_action(event, Action_Editors);
-            handled = handle_common_editor_action(action);
 
-            if !handled {
-                // Pass events to the active widget.
-                // Note that the active widget may change during the frame, so the following events
-                // will be sent to the new widget, that's why we check global widget for each event.
-                if #complete active_global_widget == {
-                    case .editors;                  handled = editors_handle_event(event);
-                    case .finder;                   handled = finder_handle_event(event);
-                    case .open_file_dialog;         handled = open_file_dialog_handle_event(event);
-                    case .delete_file_dialog;       handled = delete_file_dialog_handle_event(event);
-                    case .go_to_line_dialog;        handled = go_to_line_dialog_handle_event(event);
-                    case .open_project_dialog;      handled = open_project_dialog_handle_event(event);
-                    case .unsaved_buffers_dialog;   handled = unsaved_buffers_dialog_handle_event(event);
-                    case .confirm_overwrite_dialog; handled = confirm_overwrite_dialog_handle_event(event);
-                    case .commands_dialog;          handled = commands_dialog_handle_event(event);
-                }
+            // Pass events to the active widget.
+            // Note that the active widget may change during the frame, so the following events
+            // will be sent to the new widget, that's why we check global widget for each event.
+            if #complete active_global_widget == {
+                case .editors;                  handled = editors_handle_event(event);
+                case .finder;                   handled = finder_handle_event(event);
+                case .open_file_dialog;         handled = open_file_dialog_handle_event(event);
+                case .delete_file_dialog;       handled = delete_file_dialog_handle_event(event);
+                case .go_to_line_dialog;        handled = go_to_line_dialog_handle_event(event);
+                case .open_project_dialog;      handled = open_project_dialog_handle_event(event);
+                case .unsaved_buffers_dialog;   handled = unsaved_buffers_dialog_handle_event(event);
+                case .confirm_overwrite_dialog; handled = confirm_overwrite_dialog_handle_event(event);
+                case .commands_dialog;          handled = commands_dialog_handle_event(event);
+                case .theme_dialog;             handled = theme_dialog_handle_event(event);
             }
 
+            if !handled {
+                action := map_event_to_action(event, Action_Editors);
+                handled = handle_common_editor_action(action);
+            }
             if !handled then handled = maybe_execute_a_build_command(event);
 
             if handled && event.type == .KEYBOARD then num_text_input_events_to_ignore = event.text_input_count;
@@ -279,6 +284,7 @@ main :: () {
 
         process_buffer_save_queue();
         build_system_update();
+        maybe_revert_temporary_theme();
         refresh_open_buffers();
 
         draw_frame();
@@ -325,9 +331,13 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .decrease_font_size;                               decrease_font_size();                               return true;
         case .reset_font_size_to_default;                       reset_font_size_to_default();                       return true;
 
-        case .open_project; /* deprecated */                    show_dialog(*open_project_dialog);                  return true;
+        case .open_project;                                     #through;
         case .switch_to_project;                                show_dialog(*open_project_dialog);                  return true;
         case .close_project;                                    close_project();                                    return true;
+
+        case .choose_theme;                                     show_dialog(*theme_dialog);                         return true;
+        case .edit_current_theme;                               edit_current_theme(placement);                      return true;
+
         case .open_projects_directory;                          platform_open_in_explorer(projects_dir);            return true;
         case .open_global_config;                               editors_open_global_config(placement);              return true;
         case .open_project_config;                              editors_open_project_config(placement);             return true;
@@ -338,10 +348,10 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .create_new_file;                                  editors_create_new_file(placement);                 return true;
         case .create_new_file_on_the_side;                      editors_create_new_file(.on_the_side);              return true;
 
-        case .show_open_file_dialog_in_search_mode;             show_open_file_dialog(.search);                     return true;
-        case .show_open_file_dialog_in_navigate_mode;           show_open_file_dialog(.navigate);                   return true;
-        case .show_open_file_dialog_in_navigate_mode_from_root; show_open_file_dialog(.navigate, from_root = true); return true;
-        case .show_open_file_dialog_in_open_editors_mode;       show_open_file_dialog(.open_editors);               return true;
+        case .open_file_by_name;                                show_open_file_dialog(.search);                     return true;
+        case .navigate_to_file;                                 show_open_file_dialog(.navigate);                   return true;
+        case .navigate_to_file_from_root;                       show_open_file_dialog(.navigate, from_root = true); return true;
+        case .switch_between_open_files;                        show_open_file_dialog(.open_editors);               return true;
 
         case .show_commands;                                    show_dialog(*commands_dialog);                      return true;
         case .toggle_fullscreen;                                editor_toggle_fullscreen();                         return true;
@@ -377,8 +387,10 @@ maybe_execute_a_build_command :: (event: Input.Event) -> handled: bool {
 }
 
 init_fonts_and_dependent_things :: () {
-    delta := font_size - default_font_size;
-    font_size               = clamp(font_size,                               MIN_FONT_SIZE, MAX_FONT_SIZE);
+    push_allocator(focus_allocator);  // we sometimes call this from within a temp allocator
+
+    font_size = clamp(font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
+    delta := font_size - DEFAULT_FONT_SIZE;
     font_ui_size            = clamp(DEFAULT_FONT_UI_SIZE            + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
     font_ui_big_size        = clamp(DEFAULT_FONT_UI_BIG_SIZE        + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
     font_ui_medium_size     = clamp(DEFAULT_FONT_UI_MEDIUM_SIZE     + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -468,9 +480,10 @@ update_mouse_state :: () {
     mouse.previous_position = mouse.pointer;
 
     if shift_pressed() {
-        mouse.scroll_x_delta = cast(s32) (cast(float) Input.mouse_delta_z * WHEEL_SENSITIVITY);
+        mouse.scroll_x_delta = cast(s32) (cast(float) Input.mouse_wheel_delta.vertical * WHEEL_SENSITIVITY);
     } else {
-        mouse.scroll_y_delta = cast(s32) (cast(float) Input.mouse_delta_z * WHEEL_SENSITIVITY);
+        mouse.scroll_x_delta = cast(s32) (cast(float) Input.mouse_wheel_delta.horizontal * WHEEL_SENSITIVITY);
+        mouse.scroll_y_delta = cast(s32) (cast(float) Input.mouse_wheel_delta.vertical   * WHEEL_SENSITIVITY);
     }
     mouse.smooth_scroll = (mouse.scroll_y_delta % 120) == 0;  // @Robustness: hard-coded typical delta, but it really should be ok for now
     if !config.settings.smooth_scrolling then mouse.smooth_scroll = false;
@@ -597,6 +610,13 @@ current_time_consensus_backwards_compatible :: () -> Apollo_Time {
     }
 }
 
+fill_in_missing_default_themes :: () {
+    for theme : BUILTIN_THEMES {
+        theme_file := tprint("%/%.focus-theme", themes_dir, theme.name);
+        if !file_exists(theme_file) then write_entire_file(theme_file, theme.contents);
+    }
+}
+
 calculate_hash: (bytes: [] u8) -> u64 = calculate_meow_hash;
 
 // Important directories
@@ -604,6 +624,7 @@ config_dir:   string;
 data_dir:     string;
 temp_dir:     string;
 projects_dir: string;
+themes_dir:   string;
 
 window: Window_Type;
 window_generic_title: string = ---;
@@ -740,12 +761,34 @@ Active_Global_Widget :: enum {
     open_project_dialog;
     unsaved_buffers_dialog;
     confirm_overwrite_dialog;
+    theme_dialog;
 }
 
 Project_Dir :: struct {
     path: string;          // e.g. "C:/projects/focus"
     path_prefix_len: s64;  // in this case the length of "C:/projects/"
     name: string;          // a view into path
+}
+
+Builtin_Theme :: struct {
+    name: string;
+    contents: string;
+}
+
+BUILTIN_THEMES :: #run -> [] Builtin_Theme {
+    themes: [..] Builtin_Theme;
+
+    visitor :: (info: *File_Visit_Info, themes: *[..] Builtin_Theme) {
+        full_path := info.full_name;
+        path, basename, extension, name := path_decomp(full_path);
+        if extension != "focus-theme" return;
+        file_contents, success := read_entire_file(full_path);
+        if !success return;
+        array_add(themes, Builtin_Theme.{ name = basename, contents = file_contents });
+    }
+    visit_files("config/themes", recursive = false, *themes, visitor, visit_files = true, visit_directories = false);
+
+    return themes;
 }
 
 // A string which contains the path to a file which was just drag-and-dropped into the editor (for the draw code to use)
@@ -791,6 +834,7 @@ dont_ignore_next_window_resize := false;
 #load "widgets/commands.jai";
 #load "widgets/open_project.jai";
 #load "widgets/confirm_overwrite.jai";
+#load "widgets/theme_dialog.jai";
 
 #load "langs/common.jai";
 #load "langs/jai.jai";

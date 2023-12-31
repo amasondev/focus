@@ -1,0 +1,64 @@
+[2]  # Version number. Do not delete
+
+[colors]
+
+region_scope_export                     161616FF
+region_scope_file                       202020FF
+region_scope_module                     18181BFF
+region_header:                          1A5152FF
+region_success:                         226022FF
+region_warning:                         986032FF
+region_error:                           772222FF
+
+build_panel_title_bar:                  202020FF
+build_panel_background:                 161616FF
+build_panel_scrollbar:                  D0C5A94C
+build_panel_scrollbar_hover:            D0C5A9A8
+build_panel_scrollbar_background:       1212124C
+
+background0:                            191919FF
+background1:                            161616FF
+background2:                            18262FFF
+background3:                            202020FF
+background4:                            202020FF
+selection_active:                       0000FFCF
+selection_inactive:                     1C44497F
+selection_highlight:                    FCEDFC26
+search_result_active:                   8E772EFF
+search_result_inactive:                 FCEDFC26
+scrollbar:                              D0C5A94C
+scrollbar_hover:                        D0C5A9A8
+scrollbar_background:                   1212124C
+cursor:                                 89E2A1FF
+cursor_inactive:                        161616FF
+paste_animation:                        1C4449FF
+splitter:                               D0C5A94C
+splitter_hover:                         D0C5A9A8
+letter_highlight:                       89E2A1FF
+list_cursor_lite:                       1616167F
+list_cursor:                            161616FF
+shadow_dark:                            1616167F
+shadow_transparent:                     16161600
+text_input_label:                       D0C5A966
+
+ui_default:                             D0C5A9FF
+ui_dim:                                 D0C5A966
+ui_neutral:                             4C4C4CFF
+ui_warning:                             F8AD34FF
+ui_warning_dim:                         986032FF
+ui_error:                               772222FF
+ui_error_bright:                        FF0000FF
+ui_success:                             227722FF
+
+code_default:                           D0C5A9FF
+code_comment:                           F7F06FFF
+code_type:                              89E2A1FF
+code_function:                          D0C5A9FF
+code_punctuation:                       BFC9DBFF
+code_operation:                         B6A997FF
+code_string:                            CCE8D3FF
+code_value:                             89E2A1FF
+code_highlight:                         D89B75FF
+code_error:                             FF0000FF
+code_keyword:                           FFFBD9FF
+code_warning:                           E4D97DFF

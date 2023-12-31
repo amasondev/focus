@@ -27,10 +27,11 @@ CONFIG_SECTIONS :: Config_Section.[
     .{
         name = "style",
         subsections = .[
-            "user interface",
+            "fonts",
             "colors",
         ],
         parse_function = "parse_style_line",
+        allow_lines_outside_subsection = true,
     },
     .{
         name = "build commands",
@@ -43,12 +44,13 @@ CONFIG_SECTIONS :: Config_Section.[
     },
 ];
 
-#add_context parse_for_highlighting: bool;
-
-parse_config :: (name: string, filename: string, file_data: string, for_highlighting := false) -> Config_Parse_Result {
-    context.parse_for_highlighting = for_highlighting;
+parse_config :: (name: string, filename: string, file_data: string, for_highlighting := false, as_theme := false) -> Config_Parse_Result {
+    // NOTE: This function allocates a lot and never frees.
+    //       It expects context.allocator to be either temp or a pool allocator.
 
     using parser: Config_Parser;
+    parser.parse_for_highlighting = for_highlighting;
+    parser.parse_as_theme = as_theme;
 
     trimmed_data := trim_left(file_data, " \t\n\r");  // skip empty lines, otherwise the handler will crash!
     start_from_memory(*handler, name, filename, trimmed_data);
@@ -57,12 +59,13 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
         return result;
     }
 
-    // TODO: proper version handling and migration
     result.config.version = handler.version;
-    if result.config.version < 1 || result.config.version > 2 {
-        result.error_msg = tprint("Invalid config version [%] in file '%'. Supported versions are: [1], [2].", result.config.version, filename);
+    if result.config.version != CURRENT_CONFIG_VERSION {
+        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, filename, CURRENT_CONFIG_VERSION);
         return result;
     }
+
+    if as_theme then active_section = .style;
 
     while true {
         line, found := consume_next_line(*handler);
@@ -72,13 +75,10 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
 
         // Maybe switch sections
         if begins_with(line, "[") {
-            handled, error_msg := maybe_switch_section(*parser, line);
+            handled, error_msg := maybe_switch_section(*parser, line, fix_section = ifx parse_as_theme then .style else .none);
             if error_msg {
                 add_highlight(*parser, 0, line.count, .error);
-                if !for_highlighting {
-                    result.error_msg = log_parser_error(handler, error_msg);
-                    return result;  // this is a hard error, we don't want to proceed
-                }
+                array_add(*result.warnings, log_parser_error(parser, error_msg));
             }
             if handled continue;
         }
@@ -86,7 +86,7 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
         // Check if we have an active_section
         if active_section == .none {
             add_highlight(*parser, 0, line.count, .error);
-            error_msg := log_parser_error(handler, "Line outside of any section: '%'. This is an error.", line);
+            error_msg := log_parser_error(parser, "Line outside of any section: '%'. This is an error.", line);
             array_add(*result.warnings, error_msg);
             continue;
         }
@@ -94,7 +94,7 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
         // Check if we allow lines outside of subsection
         if active_subsection == .none && !section_allows_lines_outside_subsection(active_section) {
             add_highlight(*parser, 0, line.count, .error);
-            error_msg := log_parser_error(handler, "Line outside of subsection: '%'. This is an error.", line);
+            error_msg := log_parser_error(parser, "Line outside of subsection: '%'. This is an error.", line);
             array_add(*result.warnings, error_msg);  // not a big deal
             continue;
         }
@@ -107,12 +107,12 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
 
             append(*b, "if #complete active_section == {\n");
             for section : CONFIG_SECTIONS {
-                print_to_builder(*b, "    case .%;  success, error_msg = %(*parser, line);", replace(section.name, " ", "_"), section.parse_function);
+                print_to_builder(*b, "    case .%;  success, error_msg = %(*parser, line);\n", replace(section.name, " ", "_"), section.parse_function);
             }
             code := #string JAI
                 case .none;
-                    if !context.parse_for_highlighting {
-                        result.error_msg = log_parser_error(handler, "Expected a top-level section definition, got '%%'", line);
+                    if !parse_for_highlighting {
+                        result.error_msg = log_parser_error(parser, "Expected a top-level section definition, got '%%'", line);
                         return result;
                     }
             JAI;
@@ -122,9 +122,9 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
             return builder_to_string(*b);
         }
 
-        if error_msg then error_msg = log_parser_error(handler, error_msg);  // enrich with file/line information
+        if error_msg then error_msg = log_parser_error(parser, error_msg);  // enrich with file/line information
 
-        if !success && !context.parse_for_highlighting {
+        if !success && !parse_for_highlighting {
             result.error_msg = error_msg;
             return result;
         }
@@ -140,27 +140,6 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
     result.error_msg = "";
 
     return result;
-}
-
-add_highlight :: inline (parser: *Config_Parser, offset_from_line_start: s64, count: s64, type: Focus_Config_Token, line_start_offset := -1) {
-    if !context.parse_for_highlighting return;
-
-    offset := parser.line_start_offset + offset_from_line_start;
-    if line_start_offset >= 0 then offset = line_start_offset + offset_from_line_start;
-
-    array_add(
-        *parser.result.highlights,
-        Code_Highlight.{ offset = cast(s32) offset, count = cast(s32) count, color_num = cast(u8) type },
-    );
-}
-
-keymap_map_key_string :: (key_string: string) -> u32 {
-    for STRING_TO_CODE_MAP {
-        if equal_nocase(key_string, it.str) {
-            return cast(u32) it.code;
-        }
-    }
-    return 0;
 }
 
 keymap_map_key_code_to_string :: (key_code: u32) -> string /* temp */ {
@@ -181,11 +160,11 @@ keymap_map_key_code_to_string :: (key_code: u32) -> string /* temp */ {
 
 map_name_to_color :: (name: string) -> Color {
     if name == {
-        case "background";                              return .BACKGROUND;
-        case "background_dark";                         return .BACKGROUND_DARK;
-        case "background_highlight";                    return .BACKGROUND_HIGHLIGHT;
-        case "background_light";                        return .BACKGROUND_LIGHT;
-        case "background_bright";                       return .BACKGROUND_BRIGHT;
+        case "background0";                             return .BACKGROUND_0;
+        case "background1";                             return .BACKGROUND_1;
+        case "background2";                             return .BACKGROUND_2;
+        case "background3";                             return .BACKGROUND_3;
+        case "background4";                             return .BACKGROUND_4;
         case "selection_active";                        return .SELECTION_ACTIVE;
         case "selection_inactive";                      return .SELECTION_INACTIVE;
         case "selection_highlight";                     return .SELECTION_HIGHLIGHT;
@@ -247,31 +226,40 @@ map_name_to_color :: (name: string) -> Color {
     return .NONE;
 }
 
-free_parsed_config :: (using parsed_config: Parsed_Config) {
-    for workspace_dirs free(it);  // workspace dirs are allocated on the heap separately because we store absolute paths
-
-    array_free(workspace_dirs);
-    array_free(ignore_dirs);
-    array_free(allow_file_extensions);
-    array_free(allow_file_extension_wildcards);
-    array_free(ignore_file_extensions);
-    array_free(ignore_file_extension_wildcards);
-    array_free(keymap_common);
-    array_free(keymap_editors);
-    array_free(keymap_open_file_dialog);
-    array_free(keymap_search_dialog);
-    array_free(set_settings);
-    array_free(colors);
+get_theme_file_from_name :: (name: string) -> string /* temp */ {
+    theme_name := to_lower_copy(name, allocator = temp);
+    return tprint("%/%.focus-theme", themes_dir, theme_name);
 }
 
 
 #scope_file
 
-log_parser_error :: (handler: Text_File_Handler, format: string, args: .. Any, flags := Log_Flags.NONE, loc := #caller_location) -> string {
-    if context.parse_for_highlighting return "";  // Don't want to log anything
+add_highlight :: inline (parser: *Config_Parser, offset_from_line_start: s64, count: s64, type: Focus_Config_Token, line_start_offset := -1) {
+    if !parser.parse_for_highlighting return;
+
+    offset := parser.line_start_offset + offset_from_line_start;
+    if line_start_offset >= 0 then offset = line_start_offset + offset_from_line_start;
+
+    array_add(
+        *parser.result.highlights,
+        Code_Highlight.{ offset = cast(s32) offset, count = cast(s32) count, color_num = cast(u8) type },
+    );
+}
+
+keymap_map_key_string :: (key_string: string) -> u32 {
+    for STRING_TO_CODE_MAP {
+        if equal_nocase(key_string, it.str) {
+            return cast(u32) it.code;
+        }
+    }
+    return 0;
+}
+
+log_parser_error :: (parser: Config_Parser, format: string, args: .. Any, flags := Log_Flags.NONE, loc := #caller_location) -> string {
+    if parser.parse_for_highlighting return "";  // Don't want to log anything
 
     // Like the "error" function in the handler module, but it also returns the message because we want it
-    new_format := tprint("Line % of '%': %", handler.line_number, handler.full_path, format);
+    new_format := tprint("Line % of '%': %", parser.handler.line_number, parser.handler.full_path, format);
     message := tprint(new_format, .. args);
     log(message, flags=Log_Flags.ERROR|flags, loc=loc);
 
@@ -347,8 +335,10 @@ STRING_TO_CODE_MAP :: Str_Code.[
     // .{ "MouseWheelDown",    MOUSE_WHEEL_DOWN },
 ];
 
-maybe_switch_section :: (using parser: *Config_Parser, line: string) -> handled: bool, error: string {
+maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section := Section.none) -> handled: bool, error: string {
     if begins_with(line, "[[") {
+        if fix_section != .none return true, tprint("No top-level sections are allowed here (section is fixed to [[%]])", fix_section);
+
         // Top section
         if !ends_with(line, "]]") return true, tprint("Invalid section '%'. Section definitions must end with ]]", line);
         section_name := trim(line, " \t[]");
@@ -376,6 +366,9 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string) -> handled:
             return builder_to_string(*b);
         }
         add_highlight(parser, 0, line.count, .header_top_level);
+
+        if active_section == .style then result.config.offsets.style_section = line_start_offset;
+
     } else {
         // Subsection
         if !ends_with(line, "]") return true, tprint("Invalid subsection '%'. Subsection definitions must end with ]", line);
@@ -411,6 +404,9 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string) -> handled:
             append(*b, "}\n");
             return builder_to_string(*b);
         }
+
+        if parse_as_theme && active_subsection != .style_colors return true, "";  // don't highlight any subsections other than colors
+
         add_highlight(parser, 0, line.count, .header);
     }
 
@@ -436,7 +432,7 @@ parse_workspace_line :: (using parser: *Config_Parser, line: string) -> success:
             if file_exists(dir_path) {
                 array_add(*result.config.workspace_dirs, dir_path);
             } else {
-                if context.parse_for_highlighting {
+                if parse_for_highlighting {
                     // Highlight the bad chunk
                     for chunk : split(dir_path, "/") {
                         dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
@@ -480,12 +476,23 @@ parse_workspace_line :: (using parser: *Config_Parser, line: string) -> success:
 }
 
 parse_style_line :: (using parser: *Config_Parser, line: string) -> success: bool, error_msg: string /* temp */ {
+    if parse_as_theme && active_subsection != .style_colors {
+        add_highlight(parser, 0, line.count, .comment);
+        return true, "";  // ignore anything that's not a color
+    }
     add_highlight(parser, 0, line.count, .default);
 
     if active_subsection == {
-        case .style_user_interface;
+        case .style_fonts;
             setting, value := break_by_spaces(line);
             setting = trim_right(setting, ":");
+
+            font_settings := string.[ "font", "font_size" ];
+            if !array_find(font_settings, setting) {
+                add_highlight(parser, 0, setting.count, .error);
+                return true, tprint("Unknown font option '%'. Available options: ", setting, join(..font_settings, ", ", allocator = temp));
+            }
+
             if setting == {
                 case "font";
                     found, error_msg := find_font_by_name(value);
@@ -506,11 +513,14 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         result.config.font_size = DEFAULT_FONT_SIZE;
                         return false, tprint("Couldn't parse '%' - expected a valid integer, got '%'", setting, value);
                     }
-                case;
-                    add_highlight(parser, 0, setting.count, .error);
-                    return true, tprint("Unknown style option '%'", setting);
             }
+
         case .style_colors;
+            if result.config.theme {
+                add_highlight(parser, 0, line.count, .comment);
+                return true, "";  // ignore all colors if theme is set
+            }
+
             color_name, value := break_by_spaces(line);
             color_name = trim_right(color_name, ":");
             color_id := map_name_to_color(color_name);
@@ -535,6 +545,53 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
             if is_duplicate then add_highlight(parser, 0, line.count, .warning);
 
             array_add(*seen_colors, Seen_Color.{ line_start_offset = line_start_offset, line_length = xx line.count, color = color_id });
+
+        case;
+            if parse_as_theme {
+                add_highlight(parser, 0, line.count, .error);
+                return true, "Unexpected line outside of sections. Available section: [colors]";
+            }
+
+            setting, value := break_by_spaces(line);
+            setting = trim_right(setting, ":");
+            if setting == {
+                case "theme";
+                    result.config.offsets.theme_line = line_start_offset;
+
+                    theme_file := get_theme_file_from_name(value);
+                    if !file_exists(theme_file) && value != "default" {
+                        add_highlight(parser, value.data - line.data, value.count, .error);
+                        return true, tprint("Couldn't find theme file '%'", theme_file);
+                    }
+                    result.config.theme = value;
+
+                    if !parse_for_highlighting {
+                        theme_parse_result: Config_Parse_Result;
+
+                        // Parse theme
+                        if value != "default" {
+                            file_data, success := read_entire_file(theme_file);
+                            if !success return true, tprint("Couldn't read theme file '%'", theme_file);
+                            theme_parse_result = parse_config(value, theme_file, file_data, as_theme = true);
+                        } else {
+                            theme_parse_result = parse_config(value, "default", DEFAULT_CONFIG_FILE_DATA);
+                        }
+
+                        if !theme_parse_result.success return true, tprint("Couldn't parse theme file '%'.\nError: %", theme_file, theme_parse_result.error_msg);
+
+                        // Copy colors and font data (it points into the theme file data)
+                        array_extend(*result.config.colors, theme_parse_result.config.colors);
+                        result.config.font      = theme_parse_result.config.font;
+                        result.config.font_size = theme_parse_result.config.font_size;
+
+                        // If font details are not specified in the theme, assume default
+                        if !result.config.font      then result.config.font = "default";
+                        if !result.config.font_size then result.config.font_size = DEFAULT_FONT_SIZE;
+                    }
+                case;
+                    add_highlight(parser, 0, setting.count, .error);
+                    return true, tprint("Unknown style option '%'. Available option: theme.", setting);
+            }
     }
 
     return true, "";
@@ -708,7 +765,7 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
         }
     }
 
-    if context.parse_for_highlighting && !line_parsed_with_error {
+    if parse_for_highlighting && !line_parsed_with_error {
         // Highlight any duplicate settings
         is_duplicate := false;
         for seen_settings {
@@ -838,7 +895,7 @@ parse_keymap_line :: (using parser: *Config_Parser, line: string) -> success: bo
         if found {
             array_add(target_keymap, Key_Mapping.{ key_sequence = key_sequence, action = cast(u32) index });
         } else {
-            if context.parse_for_highlighting {
+            if parse_for_highlighting {
                 add_highlight(parser, cast(s64)(name.data - line.data), name.count, .error);
                 `return true, "";
             } else {
@@ -877,7 +934,7 @@ parse_keymap_line :: (using parser: *Config_Parser, line: string) -> success: bo
 }
 
 maybe_highlight_duplicate_keymaps :: (using parser: *Config_Parser, line: string, key_sequence: [] Key_Combo) {
-    if !context.parse_for_highlighting return;
+    if !parse_for_highlighting return;
 
     is_duplicate := false;
     for seen_keymaps {
@@ -940,7 +997,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
             case "{super}"; combo.ignore.cmd_meta_pressed = true;
             case;
                 valid_mod_key = false;
-                if !context.parse_for_highlighting {
+                if !parse_for_highlighting {
                     return combo, false, tprint("Unknown modifier key '%'. Allowed modifiers: Ctrl, Shift, Alt, Meta, Super, Cmd.", mod_key);
                 } else {
                     add_highlight(parser, cast(s64)(mod_key.data - line.data), mod_key.count, .error);
@@ -977,7 +1034,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
 
         if s.count > 0 {
             // There are extra characters, report an error
-            if !context.parse_for_highlighting {
+            if !parse_for_highlighting {
                 return combo, false, tprint("Expected a single char key code or a valid key name, got: '%'.", key_string);
             } else {
                 add_highlight(parser, cast(s64)(key_string.data - line.data), key_string.count, .error);
@@ -1000,8 +1057,6 @@ parse_linux_config_line :: (using parser: *Config_Parser, line: string) -> succe
     setting, value := break_by_spaces(line);
     setting = trim_right(setting, ":");
 
-    result.config.linux.scaling_factor = 0.0;
-
     if setting == {
         case "scaling_factor";
             val := value;  // parse_float destroys the string
@@ -1015,7 +1070,7 @@ parse_linux_config_line :: (using parser: *Config_Parser, line: string) -> succe
             lower_limit := ifx DEBUG then 0.5 else 1.0;
             if (f_val != 0.0) && (f_val < lower_limit || f_val > 5.0) {
                 add_highlight(parser, value.data - line.data, value.count, .error);
-                return true, tprint("Couldn't parse '%' - value out of the expected range ([% ... 5.0])", lower_limit, setting);;
+                return true, tprint("Couldn't parse '%' - value out of the expected range ([% ... 5.0])", lower_limit, setting);
             }
             result.config.linux.scaling_factor = f_val;
 
@@ -1034,9 +1089,7 @@ parse_linux_config_line :: (using parser: *Config_Parser, line: string) -> succe
 }
 
 section_allows_lines_outside_subsection :: inline (section: Section) -> bool {
-    // Right now it's enough to check that no subsections are defined.
-    // That could change though, in which case we'll need a separate flag
-    return CONFIG_SECTIONS[section].subsections.count == 0;
+    return CONFIG_SECTIONS[section].subsections.count == 0 || CONFIG_SECTIONS[section].allow_lines_outside_subsection;
 }
 
 section_allows_arbitrary_subsections :: inline (section: Section) -> bool {
@@ -1052,11 +1105,11 @@ Parsed_Config :: struct {
     version: int;
 
     // Workspace
-    workspace_dirs:         [..] string;
-    ignore_dirs:            [..] string;
-    allow_file_extensions:  [..] string;
+    workspace_dirs:                  [..] string;
+    ignore_dirs:                     [..] string;
+    allow_file_extensions:           [..] string;
     allow_file_extension_wildcards:  [..] string;
-    ignore_file_extensions: [..] string;
+    ignore_file_extensions:          [..] string;
     ignore_file_extension_wildcards: [..] string;
 
     // Keymap
@@ -1070,7 +1123,8 @@ Parsed_Config :: struct {
     set_settings: [..] string;  // so that we know which options were included in the config, and only touch those when merging
 
     // Style
-    font:      string;
+    theme: string;
+    font: string;
     font_size: int;
     colors:    [..] Parsed_Color;
 
@@ -1079,12 +1133,18 @@ Parsed_Config :: struct {
 
     // Platform-specific
     linux: Linux_Config;
+
+    // Remember offsets to help with modifying configs later
+    offsets: struct {
+        style_section := -1;
+        theme_line    := -1;
+    };
 };
 
 Config_Parse_Result :: struct {
     config:     Parsed_Config;
     success:    bool;
-    error_msg:  string;         // temp
+    error_msg:  string;  // temp
     warnings:   [..] string;
     highlights: [..] Code_Highlight;
     warnings.allocator   = temp;  // I love jai
@@ -1102,7 +1162,8 @@ Config_Section :: struct {
     name: string;
     parse_function: string;
     subsections: [] string;
-    allow_arbitrary_subsections := false;
+    allow_arbitrary_subsections    := false;
+    allow_lines_outside_subsection := false;
 }
 
 Config_Parser :: struct {
@@ -1126,6 +1187,9 @@ Config_Parser :: struct {
     active_subsection: Subsection = .none;
     seen_sections:     Seen_Sections;
     seen_subsections:  Seen_Subsections;
+
+    parse_for_highlighting := false;
+    parse_as_theme         := false;
 }
 
 #insert -> string {

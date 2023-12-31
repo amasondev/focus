@@ -5,10 +5,10 @@ dialog_handle_event :: (using dialog: *Generic_Choice_Dialog, event: Input.Event
             case .escape;                   #through;
             case .close_dialog;             hide_dialog(dialog)   ;                         return true;
 
-            case .open_entry_in_place;      dialog.open_entry_in_place();                   return true;
-            case .open_entry_on_the_side;   dialog.open_entry_on_the_side();                return true;
-            case .open_entry_on_the_left;   dialog.open_entry_on_the_left();                return true;
-            case .open_entry_on_the_right;  dialog.open_entry_on_the_right();               return true;
+            case .open_entry_in_place;      dialog.open_entry_in_place(); return true;
+            case .open_entry_on_the_side;   if dialog.open_entry_on_the_side  then dialog.open_entry_on_the_side();  else dialog.open_entry_in_place(); return true;
+            case .open_entry_on_the_left;   if dialog.open_entry_on_the_left  then dialog.open_entry_on_the_left();  else dialog.open_entry_in_place(); return true;
+            case .open_entry_on_the_right;  if dialog.open_entry_on_the_right then dialog.open_entry_on_the_right(); else dialog.open_entry_in_place(); return true;
 
             case .move_up;                  move_dialog_cursor(dialog, -1, wrap = true);    return true;
             case .move_down;                move_dialog_cursor(dialog,  1, wrap = true);    return true;
@@ -32,12 +32,15 @@ dialog_handle_event :: (using dialog: *Generic_Choice_Dialog, event: Input.Event
 
 show_dialog :: (dialog: *Generic_Choice_Dialog) {
     active_global_widget = dialog.global_widget_id;
+    assert(dialog.open_entry_in_place != null, "Generic dialogs must define open_entry_in_place and this one doesn't. This is a bug.");
     text_input_fully_clear(*dialog.input);
     refresh_dialog_entries(dialog);
+    if dialog.on_show then dialog.on_show();
 }
 
 hide_dialog :: (dialog: Generic_Choice_Dialog) {
     activate_editors();
+    if dialog.on_hide then dialog.on_hide();
 }
 
 refresh_dialog_entries :: (using dialog: *Generic_Choice_Dialog) {
@@ -62,6 +65,8 @@ refresh_dialog_entries :: (using dialog: *Generic_Choice_Dialog) {
     }
 
     quick_sort(filtered, compare_entries);
+
+    if dialog.after_refresh then dialog.after_refresh();
 }
 
 move_dialog_cursor :: (using dialog: *Generic_Choice_Dialog, delta: s64, wrap := false, snap := true) {
@@ -75,6 +80,8 @@ move_dialog_cursor :: (using dialog: *Generic_Choice_Dialog, delta: s64, wrap :=
         if selected >= filtered.count then selected = filtered.count - 1;
     }
     scroll_to_cursor = ifx snap then Scroll_Mode.snap else .yes;
+
+    if on_move then on_move();
 }
 
 maybe_handle_dialog_input_event :: (dialog: *Generic_Choice_Dialog, using input: *Text_Input, event: Input.Event) -> handled: bool {
@@ -109,6 +116,10 @@ Generic_Choice_Dialog :: struct(Entry_Details: Type) {
     // Will be overridden by the actual dialog structs
     global_widget_id: Active_Global_Widget;
     refresh_entries: (filter: Fuzzy_Filter) -> ();
+    after_refresh: () -> ();
+    on_move: () -> ();
+    on_show: () -> ();
+    on_hide: () -> ();
     open_entry_in_place:     () -> ();
     open_entry_on_the_side:  () -> ();
     open_entry_on_the_left:  () -> ();

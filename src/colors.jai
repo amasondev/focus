@@ -12,11 +12,11 @@ Color :: enum u8 {
     CODE_WARNING;
     CODE_KEYWORD;
 
-    BACKGROUND;
-    BACKGROUND_DARK;
-    BACKGROUND_HIGHLIGHT;
-    BACKGROUND_LIGHT;
-    BACKGROUND_BRIGHT;
+    BACKGROUND_0;
+    BACKGROUND_1;
+    BACKGROUND_2;
+    BACKGROUND_3;
+    BACKGROUND_4;
     SELECTION_ACTIVE;
     SELECTION_INACTIVE;
     SELECTION_HIGHLIGHT;
@@ -65,7 +65,10 @@ Color :: enum u8 {
 };
 
 // Will be populated when parsing config
-#no_reset COLOR_MAP: [NUM_COLORS] Vector4;
+COLOR_MAP: [NUM_COLORS] Vector4;
+
+// Will contain the color map of the default config (useful when merging configs)
+#no_reset DEFAULT_COLOR_MAP: [NUM_COLORS] Vector4;
 
 map_color_to_vec4 :: inline (color: Color) -> Vector4 {
     return COLOR_MAP[cast(s64) color];
