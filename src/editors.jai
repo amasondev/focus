@@ -135,7 +135,7 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
     // We always want to put some actions in a separate edit group (e.g. block indent)
     new_group := false;
     for cursor : editor.cursors { if new_edit_group_required_for_action(action, cursor) { new_group = true; break; } }
-    if new_group || frame_time - buffer.last_edit_time >= EDIT_GROUP_TIMEOUT then new_edit_group(buffer, editor);  // do it before action
+    if new_group || to_float64_seconds(frame_time - buffer.last_edit_time) >= EDIT_GROUP_TIMEOUT then new_edit_group(buffer, editor);  // do it before action
 
     // We want to remember where cursors were before we do any edits
     if buffer.edits.count == 0 {
@@ -319,7 +319,7 @@ active_editor_type_char :: (char: u32) {
     new_group := false;  // we always want to remember cursor state when a selection is replaced with anything
     for editor.cursors { if has_selection(it) { new_group = true; break; } }
 
-    if new_group || frame_time - buffer.last_edit_time >= EDIT_GROUP_TIMEOUT {
+    if new_group || to_float64_seconds(frame_time - buffer.last_edit_time) >= EDIT_GROUP_TIMEOUT {
         new_edit_group(buffer, editor);
     }
 
@@ -799,7 +799,7 @@ close_other_editor :: () {
                 }
                 editor_closing = true;
             } else {
-                editors.layout = .Single;  // snap
+                finish_closing_editor();
             }
     }
 }
@@ -954,90 +954,91 @@ search_bar_open_selected_result :: (editor: Editor, buffer: Buffer, placement: E
 search_and_update_results :: (using editor: *Editor, buffer: Buffer, jump := false) {
     reset_search_results(*search_bar);
 
-    using search_bar;
-    needle := cast(string) input.text;
+    needle := cast(string) search_bar.input.text;
     if !needle return;
 
-    regex: re.Regexp;
-    defer  if regex_search && regex_is_valid re.uninit(*regex);
+    assert(buffer.bytes.count < S32_MAX && needle.count < S32_MAX);
 
-    if regex_search {
-        re_text := ifx whole_word then sprint("\\w%\\w", needle) else copy_string(needle);
-        defer free(re_text);
-
-        flags := BASE_REGEX_FLAGS;
-        if !case_sensitive flags |= .FoldCase;
-
-        regex, regex_is_valid = re.compile(re_text, flags);
-        if !regex_is_valid return;
+    if search_bar.regex_search {
+        find_all_using_regex(*search_bar, needle, buffer);
+    } else {
+        find_all(*search_bar, needle, buffer);
     }
+
+    if search_bar.selected_result < 0 && search_bar.results.count > 0 then search_bar.selected_result = search_bar.results.count - 1;  // all results are before cursor, select the closest one
+    if search_bar.selected_result >= 0 && jump then jump_to_search_result(editor, buffer);
+}
+
+#scope_file
+
+find_all_using_regex :: (using search_bar: *Search_Bar, needle: string, buffer: Buffer) {
+    re_text := ifx whole_word then tprint("\\w%\\w", needle) else needle;
+    flags := BASE_REGEX_FLAGS;
+    if !case_sensitive then flags |= .FoldCase;
+
+    regex: re.Regexp;
+    regex, regex_is_valid = re.compile(re_text, flags);
+    if !regex_is_valid return;
+    defer re.uninit(*regex);
 
     buffer_str := cast(string) buffer.bytes;
 
-    assert(buffer_str.count < S32_MAX && needle.count < S32_MAX);
-    skip_table := bmh_prepare_skip_table(needle, case_sensitive);
-    offset := 0;
-    count := 0;
-    i := 0;
-    buffer_advance := 0;
-    captures: [] string;
     while true {
-        if !buffer_str break;
+        if buffer_str.count <= 0 break;
 
-        if regex_search {
-            // `re.match()` does not take a start index so we need to constantly advance
-            // `buffer_str` and keep track of our 'real' position in the original buffer
-            matched: bool;
-            matched, captures = re.match(buffer_str, regex);
-            if !matched break;
-            defer free(captures.data);
+        matched, captures := re.match(buffer_str, regex,, allocator = temp);
+        if !matched break;
 
-            c := captures[0];
-            local_offset := c.data - buffer_str.data;
-            offset = buffer_advance + local_offset;
-            count  = c.count;
-            buffer_advance = offset + count;
+        c := captures[0];
+        offset := c.data - buffer.bytes.data;
+        count  := c.count;
+        if offset < 0 || offset >= buffer.bytes.count break;
 
-            advance(*buffer_str, local_offset + count);
+        advance_amount := c.data - buffer_str.data + count;
+        if advance_amount > 0 then advance(*buffer_str, advance_amount);
 
-            empty_capture := (c.count == 0);
-            nl_next := starts_with(buffer_str, #char "\n");
+        if count == 0 || starts_with(buffer_str, #char "\n") then advance_to_next_line(*buffer_str);  // some matches could be of 0 length, which is valid, skip to the next line in this case, because otherwise we could have to look at every byte and that takes too long
 
-            if empty_capture || nl_next {
-                advance(*buffer_str, 1);
-                buffer_advance += 1;
-            }
+        // Valid result, add it to the list
+        if selected_result < 0 && offset >= search_point_offset then selected_result = results.count;
 
-            valid_result := (!empty_capture || (empty_capture && nl_next));
-            if !valid_result continue;
+        result := array_add(*results);
+        result.offset = offset;
+        result.count  = count;
+        result.line   = offset_to_real_line(buffer, offset);
+
+        if results.count >= 5000 break;
+    }
+}
+
+find_all :: (using search_bar: *Search_Bar, needle: string, buffer: Buffer) {
+    buffer_str := cast(string) buffer.bytes;
+
+    offset := 0;
+    skip_table := bmh_prepare_skip_table(needle, case_sensitive);
+
+    while true {
+        if case_sensitive {
+            offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = true);
         } else {
-            if case_sensitive {
-                offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = true);
-            } else {
-                offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = false);
-            }
-            if offset < 0 break;
-
-            count = needle.count;
+            offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = false);
         }
+        if offset < 0 break;
+        if whole_word && !match_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
 
-        assert(count > 0);
+        // Valid result, add it to the list
+        if selected_result < 0 && offset >= search_point_offset then selected_result = results.count;
 
-        if regex_search || !whole_word || (whole_word && match_whole_word(buffer_str, offset, count)) {
-            result := array_add(*results);
-            result.offset = offset;
-            result.count  = count;
-            result.line   = offset_to_real_line(buffer, offset);
-            if selected_result < 0 && result.offset >= search_point_offset then selected_result = i;
-            i += 1;
-        }
+        result := array_add(*results);
+        result.offset = offset;
+        result.count  = needle.count;
+        result.line   = offset_to_real_line(buffer, offset);
 
         offset += needle.count;
     }
-
-    if selected_result < 0 && i > 0 then selected_result = i - 1;  // all results are before cursor, select the closest one
-    if selected_result >= 0 && jump then jump_to_search_result(editor, buffer);
 }
+
+#scope_export
 
 jump_to_search_result :: (using editor: *Editor, buffer: Buffer, move_search_point := false) {
     using search_bar;
@@ -1086,6 +1087,9 @@ init_buffers :: () {
     init(*buffers_table, slots_to_allocate = 3000);
 
     init(*open_buffers_lock);
+
+    global_config_buffer_id = -1;
+    global_troubleshooting_buffer_id = -1;
 }
 
 set_lang_from_path :: (buffer: *Buffer, path: string) {
@@ -1239,7 +1243,7 @@ cursors_stop_blinking :: inline () {
 should_draw_cursors :: inline () -> bool {
     if !cursors_blinking || config.settings.cursor_blink_time_in_seconds <= 0 return true;
 
-    ms_since_start := cast(s64) ((frame_time - cursor_blink_start) * 1000);
+    ms_since_start := cast(s64) (to_float64_seconds(frame_time - cursor_blink_start) * 1000);
     if ms_since_start > config.settings.cursor_blink_time_in_seconds * 1000 {
         cursors_stop_blinking();
         return true;
@@ -2016,7 +2020,7 @@ move_to_file_end :: (editor: *Editor, buffer: Buffer) {
 break_line :: (editor: *Editor, buffer: *Buffer) {
     // Remember by how much we need to indent the new lines upfront to avoid any scanning of the dirty buffer later
     Space :: struct { start: s32; count: s32; original_start: s32; }  // not a string to avoid invalid pointers
-    space_per_cursor := NewArray(editor.cursors.count, Space, initialized = false, allocator = temp);
+    space_per_cursor := NewArray(editor.cursors.count, Space, initialized = false,, allocator = temp);
     for cursor : editor.cursors {
         selection := get_selection(cursor);
         start := get_real_line_start_offset(buffer, offset_to_real_line(buffer, selection.start));
@@ -2052,7 +2056,7 @@ break_line :: (editor: *Editor, buffer: *Buffer) {
 
 new_line_below :: (editor: *Editor, buffer: *Buffer) {
     Line_Info :: struct { end: s32; space: struct { start, count, original_start: s32; }; last_line: bool; };
-    line_info_per_cursor := NewArray(editor.cursors.count, Line_Info, initialized = false, allocator = temp);
+    line_info_per_cursor := NewArray(editor.cursors.count, Line_Info, initialized = false,, allocator = temp);
     for cursor : editor.cursors {
         selection := get_selection(cursor);
         last_line := offset_to_real_line(buffer, selection.end);
@@ -2083,7 +2087,7 @@ new_line_below :: (editor: *Editor, buffer: *Buffer) {
 
 new_line_above :: (editor: *Editor, buffer: *Buffer) {
     Line_Info :: struct { start: s32; space: struct { start, count, original_start: s32; }; };
-    line_info_per_cursor := NewArray(editor.cursors.count, Line_Info, initialized = false, allocator = temp);
+    line_info_per_cursor := NewArray(editor.cursors.count, Line_Info, initialized = false,, allocator = temp);
     for cursor : editor.cursors {
         selection  := get_selection(cursor);
         first_line := offset_to_real_line(buffer, selection.start);
@@ -2151,7 +2155,7 @@ delete_left_char :: (editor: *Editor, buffer: *Buffer) {
     // NOTE: we don't have to worry about a cursor with no selection being immediately next
     //       to the non-cursor end of another cursor's selection (thanks to organise_cursors),
     //       so it should be safe to delete at least one character to the left of every cursor if there is one
-    range_per_cursor := NewArray(editor.cursors.count, Offset_Range, initialized = false, allocator = temp);
+    range_per_cursor := NewArray(editor.cursors.count, Offset_Range, initialized = false,, allocator = temp);
     for cursor : editor.cursors {
         if should_delete_closing_bracket {
             range_per_cursor[it_index] = .{ start = cursor.pos - 1, end = cursor.pos + 1 };
@@ -2433,7 +2437,7 @@ autoindent_region :: (editor: *Editor, buffer: *Buffer, fallback := true) {
 
             range_str := get_range_as_string(buffer, line_range.range);
             if ends_with(range_str, "\n") then range_str.count -= 1;
-            lines_in_range := split(range_str, cast(u8) #char "\n");
+            lines_in_range := split(range_str, cast(u8) #char "\n",, allocator = temp);
 
             level := base_level;
             start, end: s32;
@@ -2466,7 +2470,7 @@ autoindent_region :: (editor: *Editor, buffer: *Buffer, fallback := true) {
                 level = max(0, level + next_delta);
             }
 
-            replacement = builder_to_string(*b, allocator = temp);
+            replacement = builder_to_string(*b,, allocator = temp);
         }
 
         array_add(*replacements, replacement);
@@ -2711,7 +2715,7 @@ join_lines :: (editor: *Editor, buffer: *Buffer, in_between := " ") {
         range.end   += xx offset_delta;
 
         range_str := get_range_as_string(buffer, range.range);
-        individual_lines := split(trim_right(range_str, " \t"), cast(u8) #char "\n");
+        individual_lines := split(trim_right(range_str, " \t"), cast(u8) #char "\n",, allocator = temp);
         if individual_lines.count <= 1 continue;  // nothing to join
 
         first_line         := individual_lines[0];
@@ -2735,7 +2739,7 @@ join_lines :: (editor: *Editor, buffer: *Buffer, in_between := " ") {
         append(*b, "\n");
         add_deletion(-1);
 
-        new_str := builder_to_string(*b, allocator = temp);
+        new_str := builder_to_string(*b,, allocator = temp);
         replace_range(buffer, range.range, new_str);
         add_paste_animation(editor, .{ start = range.start + cast(s32)first_line.count, end = range.start + cast(s32)new_str.count });
 
@@ -3248,7 +3252,7 @@ Editor :: struct {
 
     // TODO: use a global flag rather than per editor?
     new_cursor_just_created_using_mouse := false;  // useful to know in order to handle select-by-drag and select-word with the new cursor
-    last_cursor_created_using_mouse_at: Time;
+    last_cursor_created_using_mouse_at: Apollo_Time;
 
     initial_middle_mouse_coords: Coords; // used for creating cursors while dragging middle mouse button
 
@@ -3343,7 +3347,7 @@ Paste_Animation :: struct {
     range: Offset_Range;
     coords_range: Coords_Range;
     initted := false;
-    started_at: Time;
+    started_at: Apollo_Time;
     SPEED :: 0.3;
 }
 
@@ -3406,7 +3410,7 @@ Smooth_Scroll_Direction :: enum {
 editor_smooth_scroll: struct {
     direction: Smooth_Scroll_Direction;
     fast: bool;
-    started_at: Time;
+    started_at: Apollo_Time;
     start_x: s32;
     start_y: s32;
 };
@@ -3620,7 +3624,7 @@ move_to_editor_history_frame :: (frame: Editor_History_Frame, old_frame: Editor_
 
 #scope_file
 
-cursor_blink_start: Time;
+cursor_blink_start: Apollo_Time;
 cursors_blinking := false;
 
 global_config_buffer_id := -1;

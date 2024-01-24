@@ -119,8 +119,8 @@ main :: () {
     window_resized   := false;
 
     shift_key: struct {
-        last_press:   Time = -1;
-        last_release: Time = -1;
+        last_press:   Apollo_Time = #run to_apollo(-1);
+        last_release: Apollo_Time = #run to_apollo(-1);
         press_count := 0;
     };
 
@@ -129,9 +129,8 @@ main :: () {
 
         Input.update_window_events();
 
-        if frame_time > MAX_TIME_BEFORE_RESETTING then { init_time(); frame_time = cast(Time) get_time(); }
-        current_time := cast(Time) get_time();
-        frame_dt   = min(current_time - frame_time, MAX_FRAME_DT);
+        current_time := current_time_monotonic();
+        frame_dt   = cast(Time) min(to_float64_seconds(current_time - frame_time), MAX_FRAME_DT);
         frame_time = current_time;
 
         old_line_height = line_height;
@@ -159,23 +158,6 @@ main :: () {
 
         screen_with_title_bar := screen;
         screen_with_title_bar.h += 200;  // should be enough to include the title bar
-
-        #if OS == .MACOS {
-            nothing_to_do_this_frame := !redraw_requested && !Input.events_this_frame.count && !mouse.moved_this_frame;
-
-            if !Input.input_application_has_focus && nothing_to_do_this_frame {
-                // Avoid changing the cursor when the window is not in Focus, but only when we don't have anything else to
-                // do this frame. This also fixes the Cmd+Tab cursor-spawning issue where the window still thinks Cmd is held down.
-                sleep_milliseconds(1);
-                continue;
-            }
-
-            // Try to avoid hot-looping on macOS
-            if nothing_to_do_this_frame {
-                sleep_milliseconds(1);
-                continue;
-            }
-        }
 
         redraw_requested = false;
         window_resized   = false;
@@ -214,7 +196,7 @@ main :: () {
                         using shift_key;
                         if !event.key_pressed then last_release = frame_time;
                         if event.key_pressed && only_shift_pressed(event.modifier_flags) {
-                            if last_press < last_release && press_count > 0 && frame_time - last_press < 0.2 {
+                            if last_press < last_release && press_count > 0 && to_float64_seconds(frame_time - last_press) < 0.2 {
                                 if finder_is_open() then finder_close();
                                 else finder_open_from_editor();
                                 press_count = 0;
@@ -313,7 +295,7 @@ main :: () {
 
         // #if DEBUG FrameMark();
 
-        if cast(Time) get_time() - frame_time <= QUICK_FRAME_DT {
+        if cast(Time) to_float64_seconds(current_time_monotonic() - frame_time) <= QUICK_FRAME_DT {
             // It should be ok to sleep a bit after a quick frame to avoid pegging the core.
             sleep_milliseconds(2);
         }
@@ -379,6 +361,17 @@ maybe_execute_a_build_command :: (event: Input.Event) -> handled: bool {
 
     command_id := cast(s64) action;
     assert(command_id <= config.build.commands.count, "A keymap was bound to a nonexistent build command %. Number of build commands: %. This is a bug", command_id, config.build.commands.count);
+    
+    if config.settings.save_all_file_backed_buffers_on_build {
+        for * buffer, buffer_id : open_buffers {
+            if buffer.modified && buffer.has_file {
+                save_buffer(buffer, buffer_id);
+            }
+        }
+    } else if config.settings.save_current_buffer_on_build {
+        editor, buffer := get_active_editor_and_buffer();
+        if editor && buffer.has_file save_buffer(buffer, editor.buffer_id);
+    }
 
     command := ifx command_id > 0 then *config.build.commands[command_id-1] else *config.build.defaults;
     execute_build_command(command);
@@ -453,7 +446,7 @@ init_fonts_and_dependent_things :: () {
     }
     append(*common_icons, PEN_ICON);
     append(*common_icons, XMARK_ICON);
-    icons_string := builder_to_string(*common_icons, allocator = temp);
+    icons_string := builder_to_string(*common_icons,, allocator = temp);
 
     Simp.prepare_text(font_icons,       icons_string);
     Simp.prepare_text(font_icons_tiny, icons_string);
@@ -494,8 +487,8 @@ update_mouse_state :: () {
         button.just_released = key_state(key) & .END   != 0;
 
         if button.just_pressed {
-            time_from_last_click := frame_time - button.last_down_time;
-            time_from_last_double_click := frame_time - button.last_double_click_time;
+            time_from_last_click := to_float64_seconds(frame_time - button.last_down_time);
+            time_from_last_double_click := to_float64_seconds(frame_time - button.last_double_click_time);
             distance_from_last_click := mouse.pointer - button.last_down_pos;
             max_distance := max(abs(distance_from_last_click.x), abs(distance_from_last_click.y));
             button.last_down_pos  = mouse.pointer;
@@ -551,7 +544,7 @@ panic :: (format_string: string, args: .. Any, exit_code : s32 = 1) {
 panic_messagebox :: (format_string: string, args: .. Any) {
     #if OS == .WINDOWS {
         message := tprint(format_string, ..args);
-        MessageBoxW(null, utf8_to_wide(message), utf8_to_wide("Fatal Error"), MB_OK);
+        MessageBoxW(null, utf8_to_wide_new(message,, allocator = temp), utf8_to_wide_new("Fatal Error",, allocator = temp), MB_OK);
         exit(1);
     } else {
         panic(format_string, ..args);
@@ -643,11 +636,11 @@ force_quit              := false;
 should_reload_workspace := false;
 automatic_workspace_reload := false;
 
-frame_time: Time;                 // ever-increasing time since start in seconds
+frame_time: Apollo_Time;          // ever-increasing time since start in seconds
 frame_dt:   Time = MAX_FRAME_DT;  // time delta since the last frame
 MAX_FRAME_DT:   Time : xx (1.0 / 60);
 QUICK_FRAME_DT: Time : xx (1.0 / 300);  // sorry 300Hz monitor users
-MAX_TIME_BEFORE_RESETTING: Time : xx (60 * 60 * 24 * 7);  // reset timer after a week to avoid losing timer precision
+// MAX_TIME_BEFORE_RESETTING: Time : xx (60 * 60 * 24 * 7);  // reset timer after a week to avoid losing timer precision
 
 EDIT_GROUP_TIMEOUT :: 0.3;  // for undo/redo
 
@@ -677,8 +670,8 @@ Mouse_Button_State :: struct {
     just_triple_clicked: bool;
 
     last_down_pos:  Vector2;
-    last_down_time: Time;
-    last_double_click_time: Time;
+    last_down_time: Apollo_Time;
+    last_double_click_time: Apollo_Time;
 }
 
 WHEEL_SENSITIVITY :: 1.0;
