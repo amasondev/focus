@@ -9,8 +9,8 @@ highlight_jai_syntax :: (using buffer: *Buffer) {
         if token.type == .eof break;
 
         // Maybe retroactively highlight a function
+        before_prev, prev := tokenizer.last_tokens[0], tokenizer.last_tokens[1];
         if token.type == .punctuation && token.punctuation == .l_paren {
-            before_prev, prev := tokenizer.last_tokens[0], tokenizer.last_tokens[1];
             if prev.type == .identifier {
                 // Handle "func("
                 memset(colors.data + prev.start, xx Color.CODE_FUNCTION, prev.len);
@@ -18,9 +18,8 @@ highlight_jai_syntax :: (using buffer: *Buffer) {
                 // Handle "func :: ("
                 memset(colors.data + before_prev.start, xx Color.CODE_FUNCTION, before_prev.len);
             }
-        } else if token.type == .keyword && token.keyword == .kw_inline {
-            // Handle "func :: inline"
-            before_prev, prev := tokenizer.last_tokens[0], tokenizer.last_tokens[1];
+        } else if (token.type == .keyword && token.keyword == .kw_inline) || (token.type == .compiler_directive && token.compiler_directive == .directive_bake_arguments) {
+            // Handle "func :: inline" and "func :: #bake_arguments"
             if before_prev.type == .identifier && prev.type == .operation && prev.operation == .double_colon {
                 memset(colors.data + before_prev.start, xx Color.CODE_FUNCTION, before_prev.len);
             }
@@ -685,7 +684,7 @@ OPERATIONS :: string.[
 KEYWORDS :: string.[
     "break", "case", "cast", "code_of", "continue", "defer", "else", "enum", "enum_flags", "for", "initializer_of",
     "if", "ifx", "is_constant", "inline", "push_context", "return", "size_of", "struct", "then", "type_info", "type_of",
-    "union", "using", "while", "xx", "operator", "remove",
+    "union", "using", "while", "xx", "operator", "remove", "interface",
 ];
 
 TYPE_KEYWORDS :: string.[
@@ -706,7 +705,7 @@ COMPILER_DIRECTIVES :: string.[
     "place", "placeholder", "poke_name", "procedure_of_call", "program_export", "run", "runtime_support",
     "scope_export", "scope_file", "scope_module", "specified", "string", "symmetric", "this", "through", "type",
     "type_info_no_size_complaint", "type_info_none", "type_info_procedures_are_void_pointers",
-    "compile_time", "no_debug", "procedure_name",
+    "compile_time", "no_debug", "procedure_name", "discard", "entry_point",
 ];
 
 #insert -> string {

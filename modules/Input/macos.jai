@@ -452,39 +452,28 @@ update_cocoa_window_events :: () {
                  * can tell there really is no official way to perform this conversion; we may want
                  * to make these configurable somehow).
                  *
-                 * We also try to be mindful of momentum scrolling and reduce the "jitter" that
-                 * horizontal scrolling on a trackpad naturally incurs.
-                 *
                  *  - @ileonte 24.01.2024
                  */
                 deltaX := NSEvent.scrollingDeltaX(nsevent);
                 deltaY := NSEvent.scrollingDeltaY(nsevent);
-                phase := NSEvent.phase(nsevent);
-                momentumPhase := NSEvent.momentumPhase(nsevent);
-                is_momentum := (phase == NSEventPhaseNone) && (momentumPhase != NSEventPhaseNone);
                 has_precise_scrolling := ifx NSEvent.hasPreciseScrollingDeltas(nsevent) == YES then true else false;
 
                 if !has_precise_scrolling {
                     deltaX *= 10.0;
                     deltaY *= 20.0;
-                } else {
-                    if !is_momentum && (abs(deltaX) >= abs(deltaY) * 0.75) then deltaY = 0.0;
-                    deltaY *= 3.275;
-                    deltaX *= 2.0;
                 }
 
                 event: Event;
-                if deltaX != 0.0 {
+                if abs(deltaX) > abs(deltaY) {
                     event.type = .MOUSE_H_WHEEL;
                     event.typical_wheel_delta = WHEEL_DELTA;
-                    event.wheel_delta = cast(s32) ((deltaX / 100.0) * WHEEL_DELTA);
+                    event.wheel_delta = cast(s32) ((deltaX / 100.0) * WHEEL_DELTA * NSWindow.backingScaleFactor(NSEvent.window(nsevent)));
                     array_add(*events_this_frame, event);
                     mouse_wheel_delta.horizontal += event.wheel_delta;
-                }
-                if deltaY != 0.0 {
+                } else if deltaY != 0.0 {
                     event.type = .MOUSE_V_WHEEL;
                     event.typical_wheel_delta = WHEEL_DELTA;
-                    event.wheel_delta = cast(s32) ((deltaY / 100.0) * WHEEL_DELTA);
+                    event.wheel_delta = cast(s32) ((deltaY / 100.0) * WHEEL_DELTA * NSWindow.backingScaleFactor(NSEvent.window(nsevent)));
                     array_add(*events_this_frame, event);
                     mouse_wheel_delta.vertical += event.wheel_delta;
                 }
