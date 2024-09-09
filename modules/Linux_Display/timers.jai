@@ -18,13 +18,13 @@ timer_create :: (user_data: *void = null, cb: type_of(TimerData.cb) = null, init
         tid = timers.count - 1;
     }
 
-    tmr.fd = timerfd_create(xx CLOCK_MONOTONIC, O_CLOEXEC);
+    tmr.fd = timerfd_create(xx clockid_t.CLOCK_MONOTONIC, O_CLOEXEC);
 
     ev := epoll_event.{
         events =  EPOLLIN,
         data._u64 = xx tid,
     };
-    epoll_ctl(timers_epfd, EPOLL_CTL_ADD, tmr.fd, *ev);
+    epoll_ctl(timers_epfd, .ADD, tmr.fd, *ev);
 
     tmr.cb = cb;
     tmr.user_data = user_data;

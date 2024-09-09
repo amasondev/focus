@@ -120,16 +120,31 @@ Shader_Platform :: struct {
     rect_corner_radius_loc: GLint = -1;
     rect_edge_softness_loc: GLint = -1;
 
-    diffuse_texture_loc: GLint = -1;
-
     alpha_blend := false;
 }
 
-set_parameter :: (shader: *Shader, name: *u8, m: Matrix4) {
-    loc := glGetUniformLocation(shader.gl_handle, name);
-    if loc < 0   log_error("Unknown parameter: '%'\n", to_string(name));
+set_parameter :: (shader: *Shader, name: string, m: Matrix4) {
+    loc := get_uniform_location(shader.gl_handle, name);
+    if loc < 0   log_error("Unknown parameter: '%'\n", name);
     if loc >= 0  glUniformMatrix4fv(loc, 1, GL_TRUE, *m._11);
 }
+
+get_uniform_location :: (gl_handle: GLuint, name: string) -> GLint {
+    // Asking OpenGL for the location can be an incredibly expensive operation on some systems, so we cache it
+    key := tprint("%,%", gl_handle, name);
+    loc, found := table_find(*uniform_location_cache, key);
+    if !found {
+        loc = glGetUniformLocation(gl_handle, temp_c_string(name));
+        table_set(*uniform_location_cache, copy_string(key), loc);
+    }
+    return loc;
+}
+
+#scope_file
+
+uniform_location_cache: Table(string, GLint);
+
+#scope_export
 
 clear_render_target :: (r: float, g: float, b: float, a: float) {
     glClearColor(r, g, b, a);
@@ -164,23 +179,59 @@ swap_buffers :: (window: Window_Type, vsync := true) {  // @Incomplete: Have som
 #scope_module
 
 backend_init_shaders :: () {
-    shader_color.gl_handle   = get_shader_program(SHADER_COLOR);
-    shader_color.alpha_blend = false;
+    s := *shader_color;
+    {
+        s.gl_handle       = get_shader_program(SHADER_COLOR);
+        s.position_loc    = 0;
+        s.color_scale_loc = 1;
+        s.alpha_blend = false;
+    }
 
-    shader_color_with_blend.gl_handle   = shader_color.gl_handle;
-    shader_color_with_blend.alpha_blend = true;
+    s = *shader_color_with_blend;
+    {
+        s.gl_handle   = shader_color.gl_handle;
+        s.position_loc    = 0;
+        s.color_scale_loc = 1;
+        s.alpha_blend = true;
+    }
 
-    shader_text.gl_handle   = get_shader_program(SHADER_TEXT);
-    shader_text.alpha_blend = true;
+    s = *shader_text;
+    {
+        s.gl_handle       = get_shader_program(SHADER_TEXT);
+        s.position_loc    = 0;
+        s.color_scale_loc = 1;
+        s.uv_0_loc        = 2;
+        s.alpha_blend = true;
+    }
 
-    shader_sprite.gl_handle   = get_shader_program(SHADER_SPRITE);
-    shader_sprite.alpha_blend = true;
+    s = *shader_sprite;
+    {
+        s.gl_handle   = get_shader_program(SHADER_SPRITE);
+        s.position_loc    = 0;
+        s.color_scale_loc = 1;
+        s.uv_0_loc        = 2;
+        s.alpha_blend = true;
+    }
 
-    shader_rounded_rect.gl_handle   = get_shader_program(SHADER_ROUNDED_RECT);
-    shader_rounded_rect.alpha_blend = true;
+    s = *shader_rounded_rect;
+    {
+        s.gl_handle   = get_shader_program(SHADER_ROUNDED_RECT);
+        s.position_loc           = 0;
+        s.color_scale_loc        = 1;
+        s.rect_center_loc        = 2;
+        s.rect_size_loc          = 3;
+        s.rect_corner_radius_loc = 4;
+        s.rect_edge_softness_loc = 5;
+        s.alpha_blend = true;
+    }
 
-    shader_circle.gl_handle   = get_shader_program(SHADER_CIRCLE);
-    shader_circle.alpha_blend = true;
+    s = *shader_gradient;
+    {
+        s.gl_handle   = get_shader_program(SHADER_GRADIENT);
+        s.position_loc           = 0;
+        s.color_scale_loc        = 1;
+        s.alpha_blend = true;
+    }
 }
 
 #scope_file
@@ -190,15 +241,15 @@ backend_init_shaders :: () {
 // Shaders Here!
 //
 //
-SHADER_TEXT :: #string END
+SHADER_TEXT :: #string GLSL
 
 OUT_IN vec2 TextureCoords;
 OUT_IN vec4 iterated_color;
 
 #ifdef VERTEX_SHADER
-in vec2 vert_position;
-in vec4 vert_color;
-in vec2 vert_uv0;
+layout(location = 0) in vec2 vert_position;
+layout(location = 1) in vec4 vert_color;
+layout(location = 2) in vec2 vert_uv0;
 
 uniform mat4 projection;
 
@@ -225,15 +276,15 @@ void main () {
     colorMask = vec4(sample_left * color.a, sample_center * color.a, sample_right * color.a, 1.0);
 }
 #endif // FRAGMENT_SHADER
-END
+GLSL
 
 
-SHADER_COLOR :: #string END
+SHADER_COLOR :: #string GLSL
 OUT_IN vec4 iterated_color;
 
 #ifdef VERTEX_SHADER
-in vec2 vert_position;
-in vec4 vert_color;
+layout(location = 0) in vec2 vert_position;
+layout(location = 1) in vec4 vert_color;
 
 uniform mat4 projection;
 
@@ -250,20 +301,171 @@ void main () {
     color = iterated_color;
 }
 #endif // FRAGMENT_SHADER
-END
+GLSL
 
 
-// @Cleanup:
-// shader_sprite is 1-v from shader_text. Do we pack the text texture upside down,
-// or what?
-SHADER_SPRITE :: #string END
-OUT_IN vec2 TexCoords;
+SHADER_GRADIENT :: #string GLSL
 OUT_IN vec4 iterated_color;
 
 #ifdef VERTEX_SHADER
 in vec2 vert_position;
 in vec4 vert_color;
-in vec2 vert_uv0;
+
+uniform mat4 projection;
+
+void main() {
+    gl_Position = projection * vec4(vert_position, 0.0, 1.0);
+    iterated_color = vert_color;
+}
+#endif // VERTEX_SHADER
+
+#ifdef FRAGMENT_SHADER
+uniform vec4 rect;
+uniform int mode; // See Gradient_Mode enum.
+uniform float value;
+
+out vec4 color;
+
+float random (in vec2 _st) {
+    return fract(sin(dot(_st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+}
+
+vec4 random4(vec2 co) {
+    vec4 result;
+    result.x = random(co); co *= 2;
+    result.y = random(co); co *= 2;
+    result.z = random(co); co *= 2;
+    result.w = random(co);
+    return result;
+}
+
+vec3 hsl2rgb( in vec3 c )
+{
+    vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );
+    return c.z + c.y * (rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
+}
+
+void main () {
+    vec2 uv = vec2((gl_FragCoord.x - rect.x) / rect.z, (gl_FragCoord.y - rect.y) / rect.w);
+    // This is line 44
+    switch (mode) {
+        case 0x00:  // 2d controlled by red
+        color.r = value;
+        color.gb = uv.xy;
+        break;
+
+        case 0x01: // 2d controlled by green
+        color.g = value;
+        color.rb = uv.xy;
+        break;
+
+        case 0x02: // 2d controlled by blue
+        color.b = value;
+        color.rg = uv.xy;
+        break;
+
+        case 0x03:  // 2d controlled by hue
+        color.rgb = hsl2rgb(vec3(value, uv.x, uv.y));
+        break;
+
+        case 0x04:  // 2d controlled by saturation
+        color.rgb = hsl2rgb(vec3(uv.x, value, uv.y));
+        break;
+
+        case 0x05:  // 2d controlled by lightness
+        color.rgb = hsl2rgb(vec3(uv.x, uv.y, value));
+        break;
+
+        case 0x10: // 1d vertical displaying red
+        color.r = uv.y;
+        color.g = 0;
+        color.b = 0;
+        break;
+
+        case 0x11: // 1d vertical displaying green
+        color.r = 0;
+        color.g = uv.y;
+        color.b = 0;
+        break;
+
+        case 0x12: // 1d vertical displaying blue
+        color.r = 0;
+        color.g = 0;
+        color.b = uv.y;
+        break;
+
+        case 0x13: // 1d vertical displaying hue
+        color.rgb = hsl2rgb(vec3(uv.y, 1, 0.5));
+        break;
+
+        case 0x14: // 1d vertical displaying saturation
+        color.rgb = hsl2rgb(vec3(value, uv.y, 0.5));
+        break;
+
+        case 0x15: // 1d vertical displaying lightness
+        color.rgb = hsl2rgb(vec3(value, 1, uv.y));
+        break;
+
+        case 0x16: // 1d vertical displaying alpha
+        color.rgb = vec3(uv.y);
+        break;
+
+        case 0x20: // 1d horizontal displaying red
+        color.r = uv.x;
+        color.g = 0;
+        color.b = 0;
+        break;
+
+        case 0x21: // 1d horizontal displaying green
+        color.r = 0;
+        color.g = uv.x;
+        color.b = 0;
+        break;
+
+        case 0x22: // 1d horizontal displaying blue
+        color.r = 0;
+        color.g = 0;
+        color.b = uv.x;
+        break;
+
+        case 0x23: // 1d horizontal displaying hue
+        color.rgb = hsl2rgb(vec3(uv.x, 1, 0.5));
+        break;
+
+        case 0x24: // 1d horizontal displaying saturation
+        color.rgb = hsl2rgb(vec3(value, uv.x, 0.5));
+        break;
+
+        case 0x25: // 1d horizontal displaying lightness
+        color.rgb = hsl2rgb(vec3(value, 1, uv.x));
+        break;
+
+        case 0x26: // 1d horizontal displaying alpha
+        color.rgb = vec3(uv.x);
+        break;
+    }
+
+    // When color is between two displayable values dither it to avoid banding; round it up or down randomly,
+    // proportionate to which it is nearer to.
+    vec4 remainder = fract(color * 255.0);
+    color = color - (remainder / 255.0) + (1.0 / 255.0) - (step(remainder, random4(uv)) / 255.0);
+    color.a = iterated_color.a;
+}
+#endif // FRAGMENT_SHADER
+GLSL
+
+
+// @Cleanup:
+// shader_sprite is 1-v from shader_text. Do we pack the text texture upside down,
+// or what?
+SHADER_SPRITE :: #string GLSL
+OUT_IN vec2 TexCoords;
+OUT_IN vec4 iterated_color;
+
+#ifdef VERTEX_SHADER
+layout(location = 0) in vec2 vert_position;
+layout(location = 1) in vec4 vert_color;
+layout(location = 2) in vec2 vert_uv0;
 
 uniform mat4 projection;
 
@@ -286,9 +488,9 @@ void main () {
     color = color_tex;
 }
 #endif // FRAGMENT_SHADER
-END
+GLSL
 
-SHADER_ROUNDED_RECT :: #string END
+SHADER_ROUNDED_RECT :: #string GLSL
 OUT_IN vec4 iterated_color;
 flat OUT_IN vec2 rect_center;
 flat OUT_IN vec2 rect_size;
@@ -296,13 +498,13 @@ flat OUT_IN float rect_corner_radius;
 flat OUT_IN float rect_edge_softness;
 
 #ifdef VERTEX_SHADER
-in vec2 vert_position;
-in vec4 vert_color;
+layout(location = 0) in vec2 vert_position;
+layout(location = 1) in vec4 vert_color;
 
-in vec2 vert_rect_center;
-in vec2 vert_rect_size;
-in float vert_rect_corner_radius;
-in float vert_rect_edge_softness;
+layout(location = 2) in vec2 vert_rect_center;
+layout(location = 3) in vec2 vert_rect_size;
+layout(location = 4) in float vert_rect_corner_radius;
+layout(location = 5) in float vert_rect_edge_softness;
 
 uniform mat4 projection;
 
@@ -331,48 +533,7 @@ void main () {
 }
 
 #endif // FRAGMENT_SHADER
-END
-
-// TODO: finish
-SHADER_CIRCLE :: #string END
-OUT_IN vec4 iterated_color;
-flat OUT_IN vec2 center;
-flat OUT_IN float radius;
-flat OUT_IN float softness;
-
-#ifdef VERTEX_SHADER
-in vec2 vert_position;
-in vec4 vert_color;
-
-in vec2 vert_rect_center;
-in vec2 vert_rect_size;
-in float vert_rect_corner_radius;
-in float vert_rect_edge_softness;
-
-uniform mat4 projection;
-
-void main() {
-    gl_Position = projection * vec4(vert_position, 0.0, 1.0);
-    iterated_color    = vert_color;
-
-    center = vert_rect_center;
-    radius = vert_rect_corner_radius;
-    softness = vert_rect_edge_softness;
-}
-#endif // VERTEX_SHADER
-
-#ifdef FRAGMENT_SHADER
-out vec4 color;
-
-void main () {
-    float distance = length(max(abs(gl_FragCoord.xy - center) + radius, 0.0)) - radius;
-    float smoothed_alpha = 1.0f - smoothstep(0.0f, softness, distance);
-    color = vec4(iterated_color.xyz, iterated_color.a * smoothed_alpha);
-}
-
-#endif // FRAGMENT_SHADER
-END
-
+GLSL
 
 get_shader_program :: (shader_text: string) -> GLuint {
     LOG_BUFFER_SIZE :: 512;
@@ -406,17 +567,17 @@ get_shader_program :: (shader_text: string) -> GLuint {
         return shader_object;
     }
 
-    PREFIX_V :: #string END
+    PREFIX_V :: #string GLSL
     #version 330 core
     #define VERTEX_SHADER
     #define OUT_IN out
-    END
+    GLSL
 
-    PREFIX_F :: #string END
+    PREFIX_F :: #string GLSL
     #version 330 core
     #define FRAGMENT_SHADER
     #define OUT_IN in
-    END
+    GLSL
 
     shader_v := make_shader_object(shader_text, PREFIX_V, GL_VERTEX_SHADER);
     shader_f := make_shader_object(shader_text, PREFIX_F, GL_FRAGMENT_SHADER);
@@ -444,7 +605,7 @@ get_shader_program :: (shader_text: string) -> GLuint {
 
 
 #scope_export
-draw_generated_quads :: (font: *Dynamic_Font, color := Vector4.{1, 1, 1, 1}) {
+draw_generated_quads :: (font: *Dynamic_Font, color: u8) {
     CheckInit();
     quads := font.current_quads;
 
@@ -459,6 +620,8 @@ draw_generated_quads :: (font: *Dynamic_Font, color := Vector4.{1, 1, 1, 1}) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     last_texture: GLuint = 0xFFFFFFFF;
+
+    color_vec4 := COLOR_MAP[color];
 
     for quad, i: quads {
         page := quad.glyph.page;
@@ -478,14 +641,14 @@ draw_generated_quads :: (font: *Dynamic_Font, color := Vector4.{1, 1, 1, 1}) {
             last_texture = map.gl_handle;
 
             shader := state.current_shader;
-            loc := glGetUniformLocation(shader.gl_handle, "text_sampler");
+            loc := get_uniform_location(shader.gl_handle, "text_sampler");
             if loc < 0  log_error("Unable to find text_sampler in shader_text!");
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, map.gl_handle);  // Bind handle to slot 0.
             glUniform1i(loc, 0);
         }
 
-        immediate_letter_quad(quad, color);
+        immediate_letter_quad(quad, color_vec4);
     }
 
     // Same as above. This is not good
@@ -734,7 +897,7 @@ backend_use_shader :: (s: *Shader) {
 }
 
 backend_set_texture :: (shader: *Shader, texture: *Texture) {
-    loc := glGetUniformLocation(shader.gl_handle, "diffuse_texture");
+    loc := get_uniform_location(shader.gl_handle, "diffuse_texture");
 
     if loc < 0 {
         log_error("Unable to find 'diffuse_texture' in the current shader.");

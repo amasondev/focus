@@ -15,6 +15,8 @@ init_finder :: () {
 
 deinit_finder :: () {
     if finder.initted shutdown(*thread_group);
+    reset_results();
+    text_input_fully_clear(*finder.input);
     finder.initted = false;
 }
 
@@ -39,7 +41,9 @@ finder_handle_event :: (event: Input.Event) -> handled: bool {
             case .move_up_one_page;         move_cursor(-per_page);                                 return true;
             case .move_down_one_page;       move_cursor( per_page);                                 return true;
 
+            case .escape;                   #through;
             case .close_dialog;             finder_close();                                         return true;
+
             case .open_entry_in_place;      finder_open_selected_result(selected, .in_place);       return true;
             case .open_entry_on_the_side;   finder_open_selected_result(selected, .on_the_side);    return true;
             case .open_entry_on_the_left;   finder_open_selected_result(selected, .left);           return true;
@@ -66,6 +70,8 @@ finder_open :: () {
     input.cursor.sel = 0;
     input.cursor.pos = xx input.text.count;
 
+    case_sensitive_toggled_manually = false;
+
     if need_to_refresh_results {
         need_to_refresh_results = false;
         reset_results();
@@ -84,7 +90,7 @@ finder_open_from_editor :: () {
     if editor && editor.cursors.count == 1 {
         cursor := editor.cursors[0];
         selected_text := get_selected_string(cursor, buffer);
-        if selected_text && selected_text != to_string(finder.input.text) && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
+        if selected_text && selected_text != cast(string) finder.input.text && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
             replace_text(*finder.input, selected_text);
             reset_results();
             start_new_search();
@@ -124,7 +130,7 @@ finder_update :: () {
             array_resize(*results, total_results, initialize = false);
             i := 0;
             for request.completed_tasks {
-                memcpy(results.data + i, it.results.data, it.num_results * size_of(Search_Result));
+                focus_memcpy(results.data + i, it.results.data, it.num_results * size_of(Search_Result));
                 i += it.num_results;
             }
 
@@ -134,6 +140,7 @@ finder_update :: () {
 
             quick_sort(results, compare_search_results);
 
+            if needle then free(needle);
             needle = copy_string(request.needle);
 
             // Clean up task data
@@ -191,6 +198,8 @@ finder_toggle_case_sensitive :: () {
     using finder;
 
     case_sensitive = !case_sensitive;
+    case_sensitive_toggled_manually = true;
+
     start_new_search(force = true);
 }
 
@@ -228,24 +237,30 @@ start_new_search :: (force := false) {
         reset_results();
         return;
     }
-    if request.needle == to_string(input.text) && !force return;  // needle hasn't changed, no need to repeat
+    new_needle := cast(string) input.text;
+
+    if request.needle == new_needle && !force return;  // needle hasn't changed, no need to repeat
+
+    if config.settings.search_is_case_sensitive_when_uppercase_present && !case_sensitive_toggled_manually {
+        case_sensitive = contains_uppercase_ascii(new_needle);
+    }
+
+    request.case_sensitive = case_sensitive;
+    request.whole_word     = whole_word;
+    request.regex_search   = regex_search;
     if regex_search {
         regex: re.Regexp;
 
         flags := BASE_REGEX_FLAGS;
         if !case_sensitive flags |= .FoldCase;
 
-        regex, regex_is_valid = re.compile(to_string(input.text), flags);
+        regex, regex_is_valid = re.compile(new_needle, flags);
         if !regex_is_valid return;  // only search if the regex is valid
 
         re.uninit(*regex);
     }
 
-    request.case_sensitive = case_sensitive;
-    request.whole_word     = whole_word;
-    request.regex_search   = regex_search;
-
-    reset_search_request(*request, new_needle = to_string(input.text));
+    reset_search_request(*request, new_needle);
     request.in_progress = true;
 
     num_threads := thread_group.worker_info.count;
@@ -278,102 +293,106 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
     using task := cast(*Search_Task) work;
 
     regex: re.Regexp;
-    regex_is_valid: bool;
-    defer if regex_search && regex_is_valid re.uninit(*regex);
-
     if regex_search {
-        re_text := ifx whole_word then sprint("\\w%\\w", needle) else copy_string(needle);
-        defer free(re_text);
-
+        // Compile the regex for each threadproc for thread safety
+        re_text := ifx whole_word then tprint("\\w%\\w", needle) else needle;
         flags := BASE_REGEX_FLAGS;
-        if !case_sensitive flags |= .FoldCase;
-
-        regex, regex_is_valid = re.compile(re_text, flags);
-        assert(regex_is_valid, "Failed to compile regex: '%'", re_text);
+        if !case_sensitive then flags |= .FoldCase;
+        regex = re.compile(re_text, flags);  // NOTE: the validity of this regex has been determined by previous code
     }
+    defer if regex_search then re.uninit(*regex);
 
     for buffer_id : buffer_start_index .. buffer_end_index {
         // Search in buffer
         buffer := *open_buffers[buffer_id];
-        if (buffer.deleted && !buffer.modified) || buffer.binary continue;  // do not search
+        if (buffer.deleted && !buffer.modified) || buffer.binary || buffer.internal continue;  // do not search
 
         // Make sure the buffer contents doesn't change while we're scanning it
         lock(*buffer.content_lock);
         defer unlock(*buffer.content_lock);
 
-        contents := to_string(buffer.bytes);
-
         // Sort key parts
         dir_id_part:    u64 = (cast,trunc(u64) (buffer.file.project_dir_id + 1)) << 56;
         buffer_id_part: u64 = (cast,trunc(u64) buffer_id)                        << 32;
         if buffer.modified || buffer.modified_on_disk then dir_id_part = 0;  // make sure modified buffers are on top
+        buffer_sort_key: u64 = dir_id_part | buffer_id_part;
 
-        offset := 0;
-        count := 0;
-        contents_advance := 0;
-        captures: [] string;
-        while true {
-            if !contents break;
-
-            if regex_search {
-                // `re.match()` does not take a start index so we need to constantly advance
-                // `contents` and keep track of our 'real' position in the original buffer
-                matched: bool;
-                matched, captures = re.match(contents, regex);
-                if !matched break;
-                defer free(captures.data);
-
-                c := captures[0];
-                local_offset := c.data - contents.data;
-                offset = contents_advance + local_offset;
-                count  = c.count;
-                contents_advance = offset + count;
-
-                advance(*contents, local_offset + count);
-
-                empty_capture := (c.count == 0);
-                nl_next := starts_with(contents, #char "\n");
-
-                if empty_capture || nl_next {
-                    advance(*contents, 1);
-                    contents_advance += 1;
-                }
-
-                valid_result := !empty_capture || (empty_capture && nl_next);
-                if !valid_result continue;
-            } else {
-                if case_sensitive {
-                    offset = inline bmh_find_index_from_left(contents, needle, start_index = offset, skip_table, case_sensitive = true);
-                } else {
-                    offset = inline bmh_find_index_from_left(contents, needle, start_index = offset, skip_table, case_sensitive = false);
-                }
-                if offset < 0 break;
-
-                count = needle.count;
-            }
-
-            if regex_search || !whole_word || (whole_word && match_whole_word(contents, offset, count)) {
-                result := *results[num_results];
-                result.buffer_id    = buffer_id;
-                result.match_offset = xx offset;
-                result.match_count  = xx count;
-
-                offset_part: u64 = (cast,trunc(u64) offset) << 0;
-                result.sort_key = dir_id_part | buffer_id_part | offset_part;
-
-                num_results += 1;
-                if num_results >= MAX_RESULTS_PER_WORKER break buffer_id;
-
-            }
-
-            offset += count;
+        if regex_search {
+            find_all_using_regex(task, regex, buffer, buffer_id, buffer_sort_key);
+        } else {
+            find_all(task, buffer, buffer_id, buffer_sort_key);
         }
+
+        if num_results >= MAX_RESULTS_PER_WORKER break;
     }
 
     return .CONTINUE;  // we want to reuse this thread for future searches
 }
 
-reset_search_request :: (using request: *Search_Request, new_needle: string) { //@nocheckin: add whole_word / case sensitive parameters
+find_all_using_regex :: (using task: *Search_Task, regex: re.Regexp, buffer: Buffer, buffer_id: s32, buffer_sort_key: u64) {
+    buffer_str := cast(string) buffer.bytes;
+
+    while true {
+        if buffer_str.count <= 0 break;
+
+        auto_release_temp();  // this is very important because the regex library allocates a lot and we need to throw it away immediately
+
+        matched, captures := re.match(buffer_str, regex,, allocator = temp);
+        if !matched break;
+
+        c := captures[0];
+        offset := c.data - buffer.bytes.data;
+        count  := c.count;
+        if offset < 0 || offset >= buffer.bytes.count break;
+
+        advance_amount := c.data - buffer_str.data + count;
+        if advance_amount > 0 then advance(*buffer_str, advance_amount);
+
+        if count == 0 || starts_with(buffer_str, #char "\n") then advance_to_next_line(*buffer_str);  // some matches could be of 0 length, which is valid, skip to the next line in this case, because otherwise we could have to look at every byte and that takes too long
+
+        // Valid result, add to the list
+        result := *results[num_results];
+        result.buffer_id    = buffer_id;
+        result.match_offset = xx offset;
+        result.match_count  = xx count;
+
+        offset_part: u64 = (cast,trunc(u64) offset) << 0;
+        result.sort_key = buffer_sort_key | offset_part;
+
+        num_results += 1;
+        if num_results >= MAX_RESULTS_PER_WORKER break;
+    }
+}
+
+find_all :: (using task: *Search_Task, buffer: Buffer, buffer_id: s32, buffer_sort_key: u64) {
+    buffer_str := cast(string) buffer.bytes;
+    offset := 0;
+
+    while true {
+        if case_sensitive {
+            offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = true);
+        } else {
+            offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = false);
+        }
+        if offset < 0 break;
+        if whole_word && !match_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
+
+        result := *results[num_results];
+        result.buffer_id    = buffer_id;
+        result.match_offset = xx offset;
+        result.match_count  = xx needle.count;
+
+        offset_part: u64 = (cast,trunc(u64) offset) << 0;
+        result.sort_key = buffer_sort_key | offset_part;
+
+        num_results += 1;
+        if num_results >= MAX_RESULTS_PER_WORKER break;
+
+        offset += needle.count;
+    }
+}
+
+reset_search_request :: (using request: *Search_Request, new_needle: string) {
     id += 1;
     for completed_tasks free_task(it);
     array_reset_keeping_memory(*completed_tasks);
@@ -421,6 +440,7 @@ Finder :: struct {
     results: [..] Search_Result;
 
     case_sensitive: bool;
+    case_sensitive_toggled_manually: bool;
     whole_word: bool;
     regex_search: bool;
     regex_is_valid: bool;

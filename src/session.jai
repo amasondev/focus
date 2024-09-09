@@ -26,7 +26,7 @@ maybe_load_previous_session :: () -> Session {
         if num_old_sessions > 0 {
             for i : 1 .. num_old_sessions {
                 session_dir := tprint("%/%", temp_dir, session_dirs[session_dirs.count - i].name);
-                deleted := delete_directory(session_dir);
+                deleted := delete_dir_recursively(session_dir);
                 if !deleted log_error("Couldn't delete old session '%'", session_dir);
             }
         }
@@ -148,7 +148,7 @@ maybe_load_previous_session :: () -> Session {
     //         //     // if created {
     //         //     //     // Recover cursor and viewport position
     //         //     //     editor := *open_editors[editor_id];
-    //         //     //     editor.cursors[0].state = editor_state.main_cursor;
+    //         //     //     editor.cursors[0] = editor_state.main_cursor;
     //         //     //     editor.viewport.top  = editor_state.viewport_top;
     //         //     //     editor.viewport.left = editor_state.viewport_left;
     //         //     // }
@@ -157,6 +157,44 @@ maybe_load_previous_session :: () -> Session {
     //
     //     visit_files(last_session_dir, recursive = false, null, visitor);
     // }
+}
+
+delete_dir_recursively :: (dir_path: string) -> deleted: bool {
+    // NOTE: ideally we'd want to use the standard library's delete_directory function,
+    //       but on Windows it uses the SHFileOperationW function, which can load
+    //       a HELL OF A LOT of useless DLLs into the process and cause an unnecessary slowdown.
+    //       So we're doing it ourselves here.
+
+    success := true;
+
+    directory_visitor_func :: (info: *File_Visit_Info, success_pointer: *bool) {
+        if info.is_directory {
+            visit_files(info.full_name, recursive=false, success_pointer, directory_visitor_func, visit_files=true, visit_directories=true);
+            deleted := delete_empty_dir(info.full_name);
+            if !deleted then success_pointer.* = false;
+        } else {
+            deleted := file_delete(info.full_name);
+            if !deleted then success_pointer.* = false;
+        }
+    }
+
+    visit_files(dir_path, recursive=false, *success, directory_visitor_func, visit_files=true, visit_directories=true);
+
+    deleted := delete_empty_dir(dir_path);
+    if !deleted then success = false;
+
+    return success;
+}
+
+delete_empty_dir :: (dir_path: string) -> deleted: bool {
+    #if OS == .WINDOWS {
+        deleted := RemoveDirectoryW(utf8_to_wide_new(dir_path,, temp));
+        return cast(bool) deleted;
+    } else {
+        POSIX :: #import "POSIX";
+        result := POSIX._remove(temp_c_string(dir_path));
+        return result == 0;
+    }
 }
 
 init_logger :: () {
@@ -314,7 +352,7 @@ copy_session_data :: (source: string, dest: string) {
 
 session_set_project :: (project: string) {
     session.project = project;
-    platform_set_window_title(tprint("% - Focus", project));
+    // platform_set_window_title(tprint("% - Focus", project));
 }
 
 save_editor_state_into_file :: () {
@@ -359,7 +397,7 @@ dump_buffer_state :: (buffer_id: s64) -> [] u8 #must {
 
        editor_state := *editor_states[num_editors];
        editor_state.editor_id     = it_index;
-       editor_state.main_cursor   = it.cursors[it.main_cursor].state;
+       editor_state.main_cursor   = it.cursors[it.main_cursor];
        editor_state.viewport_top  = it.viewport.top;
        editor_state.viewport_left = it.viewport.left;
 
@@ -385,7 +423,7 @@ dump_buffer_state :: (buffer_id: s64) -> [] u8 #must {
     if buffer.modified append(*builder, buffer.bytes.data, buffer.bytes.count);
 
     // Calculate and append a hash for verification
-    hashable_str := builder_to_string(*builder, allocator = temp, do_reset = false);
+    hashable_str := builder_to_string(*builder, do_reset = false,, allocator = temp);
     meow_hash := calculate_hash(to_bytes(hashable_str));
     append(*builder, cast(*u8) *meow_hash, size_of(type_of(meow_hash)));
 
@@ -408,7 +446,9 @@ session_logger :: (raw_msg: string, data: *void, info: Log_Info) {
 
     #if DEBUG {
         // Write to stdout/stderr
-        context.default_logger(message, data, info);
+        if (info.common_flags & .TO_FILE_ONLY) == 0 {
+            runtime_support_default_logger(message, data, info);
+        }
     }
 }
 
@@ -480,7 +520,7 @@ Buffer_State :: struct {
 
     Editor :: struct {
         editor_id: s64;  // for identifying whether this buffer is shown in the saved layout. No use for it otherwise
-        main_cursor: Cursor.State;
+        main_cursor: Cursor;
 
         viewport_top:  s32;
         viewport_left: s32;
@@ -499,4 +539,4 @@ saves_in_flight: [..] Async_Buffer_Save;
 
 logger_mutex: Mutex;
 
-MAX_SESSIONS_TO_STORE :: 20;  // in case people open several files in several editors, hopefully should be enough
+MAX_SESSIONS_TO_STORE :: 50;  // in case people open several files in several editors, hopefully should be enough
