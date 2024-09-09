@@ -1993,7 +1993,6 @@ is_a_move_action :: (action: Action_Editors) -> bool {
         case .jump_to_line_end;                 return true;
         case .jump_to_file_start;               return true;
         case .jump_to_file_end;                 return true;
-        case .jump_to_matching_bracket;         return true;
     }
     return false;
 }
@@ -2139,32 +2138,6 @@ move_cursors_end :: (editor: *Editor, buffer: Buffer) {
     }
 
     editor.cursor_moved = .unimportant;
-}
-
-move_cursors_to_matching_bracket :: (editor: *Editor, buffer: Buffer) {
-    buffer_str := cast(string) buffer.bytes;
-    for * cursor : editor.cursors {
-        c : u32 = 0;
-        pos := cursor.pos;
-        if cursor.pos < buffer.bytes.count {
-            t := buffer_str[cursor.pos];
-            if is_balanceable_char(t, true) then c = t;
-        }
-        // do the character left of the cursor as well.
-        if !c && cursor.pos - 1 >= 0 {
-            pos = cursor.pos - 1;
-            t := buffer_str[cursor.pos - 1];
-            if is_balanceable_char(t, true) then c = t;
-        }
-        if !c continue;
-        offset := find_balancing_char(buffer_str, c, pos);
-        if offset < 0 continue;
-
-        line := offset_to_real_line(buffer, offset);
-        cursor.pos = xx offset;
-        editor.cursor_moved = .jumped;
-    }
-
 }
 
 move_to_file_start :: (editor: *Editor, buffer: Buffer) {

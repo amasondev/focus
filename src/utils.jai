@@ -311,21 +311,8 @@ is_separator_char :: inline (ch: u32) -> bool {
         ch == #char "\\";
 }
 
-is_balanceable_char :: (ch: u32, include_closing := false) -> bool {
-    if ch == {
-        case #char "{";  return true;
-        case #char "(";  return true;
-        case #char "[";  return true;
-        case #char "\""; return true;
-    }
-    if include_closing {
-        if ch == {
-            case #char "}"; return true;
-            case #char ")"; return true;
-            case #char "]"; return true;
-        }
-    }
-    return false;
+is_balanceable_char :: (ch: u32) -> bool {
+    return ch == #char "{" || ch == #char "(" || ch == #char "[" || ch == #char "\"";
 }
 
 is_auto_closeable_char :: (ch: u32) -> bool {
