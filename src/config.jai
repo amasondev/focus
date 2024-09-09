@@ -1,8 +1,7 @@
-CURRENT_CONFIG_VERSION :: 2;
+CURRENT_CONFIG_VERSION :: 5;
 
 load_global_config :: (fallback_to_default_on_failure := false, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     config_path := tprint("%/global.focus-config", config_dir);
-    if !global_config.path then global_config.path = copy_string(config_path);
     start_watching_file_if_not_already(config_path);
 
     if !file_exists(config_path) {
@@ -34,13 +33,12 @@ load_global_config :: (fallback_to_default_on_failure := false, force := false) 
     }
 }
 
-load_project_config :: (project: string = "", force := false) -> success: bool, changed: bool, there_were_warnings: bool {
-    if !project && !current_project_name {
-        log_error("Attempted to load an empty project config. This is a bug.");
-        return false, false, false;
-    }
-    project_name := ifx project then project else current_project_name;
-    config_path  := tprint("%/%.focus-config", projects_dir, project_name);
+load_project_config :: (file_path: string, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
+    assert(file_path != "", "Attempting to load project config from an empty path. This is a bug.");
+
+    config_path := copy_string(file_path,, temp);
+    path_overwrite_separators(config_path, #char "/");
+
     start_watching_file_if_not_already(config_path);
 
     loaded_config, changed := load_config(config_path, *project_config, force);
@@ -63,7 +61,7 @@ load_project_config :: (project: string = "", force := false) -> success: bool, 
         free_loaded_config(*project_config);
         project_config = loaded_config;
 
-        current_project_name = copy_string(project_name);
+        add_to_most_recent_projects(file_path);
 
         return true, changed, loaded_config.there_were_warnings;
     } else {
@@ -73,56 +71,24 @@ load_project_config :: (project: string = "", force := false) -> success: bool, 
     }
 }
 
-apply_config :: () {
-    // Make sure the values are within the acceptable range
-    old_tab_size := TAB_SIZE;
-    TAB_SIZE = clamp(cast(s32) config.settings.tab_size, 1, 100);  // be reasonable mkay (though even 100 is unreasonable)
-    if config.settings.tab_size != TAB_SIZE then add_user_warning("Tab size clamped to %", TAB_SIZE);
-
-    if old_tab_size != TAB_SIZE {
-        // Refresh all editors which have line wrap on
-        for * editor : open_editors {
-            buffer := *open_buffers[editor.buffer_id];
-            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
-        }
-    }
-
-    clamp_and_warn :: (setting: *$T, min: T, max: T, message: string) {
-        old := setting.*;
-        clamped := clamp(old, min, max);
-        if clamped != old {
-            add_user_warning(message, clamped);
-            setting.* = clamped;
-        }
-    }
-
-    clamp_and_warn(*config.settings.line_height_scale_percent,  50,  1000,        "Line height scale clamped to % percent");
-    clamp_and_warn(*config.settings.editor_history_size,        4,   1024 * 1024, "Editor history size clamped to %");
-    clamp_and_warn(*config.settings.build_panel_height_percent, 10,  100,         "Build panel height clamped to % percent");
-    clamp_and_warn(*config.settings.build_panel_width_percent,  10,  100,         "Build panel width clamped to % percent");
-
-    build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
-    build_panel_height = config.settings.build_panel_height_percent / 100.0;
-    build_panel_height_anim.target = build_panel_height;
-    build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
-
-    // Must do after the validation
-    init_fonts_and_dependent_things();
-
-    platform_apply_config();
-}
-
-free_loaded_config :: (using loaded_config: *Loaded_Config) {
-    path = "";
-    parsed_config = Parsed_Config.{};
-    reset(*memory_pool);
-}
-
 refresh_config :: (path: string) {
-    // Deep copy old workspace dirs (they will be freed by the load config function otherwise)
-    old_workspace_dirs: [..] string;
-    old_workspace_dirs.allocator = temp;
-    for config.workspace.workspace_dirs array_add(*old_workspace_dirs, copy_temporary_string(it));
+    // Deep copy old workspace members and allow/ignore lists (they will be freed by the load config function otherwise)
+    old_workspace_members: [..] string;
+    old_workspace_members.allocator = temp;
+    for config.workspace.members array_add(*old_workspace_members, copy_temporary_string(it));
+
+    old_allow_list: [..] string;
+    old_allow_list.allocator = temp;
+    for config.workspace.allow array_add(*old_allow_list, copy_temporary_string(it));
+
+    old_ignore_list: [..] string;
+    old_ignore_list.allocator = temp;
+    for config.workspace.ignore array_add(*old_ignore_list, copy_temporary_string(it));
+
+    // Remember old file associations
+    old_file_associations: [..] File_Association;
+    old_file_associations.allocator = temp;
+    for config.workspace.file_associations array_add(*old_file_associations, .{ copy_temporary_string(it.wildcard), it.lang });
 
     if platform_path_equals(path, global_config.path) {
         success, changed, there_were_warnings := load_global_config();
@@ -131,56 +97,107 @@ refresh_config :: (path: string) {
             add_success_message("Global config changes have been applied", dismiss_in_seconds = 3, tag = .config);
         }
         if project_config.loaded {
-            success, changed, there_were_warnings = load_project_config(current_project_name, force = true);
+            success, changed, there_were_warnings = load_project_config(project_config.path, force = true);
             if success && changed && !there_were_warnings {
-                add_success_message("Config changes for project '%' have been applied", current_project_name, dismiss_in_seconds = 3, tag = .config);
+                add_success_message("Config changes for project '%' have been applied", get_current_project_name(), dismiss_in_seconds = 3, tag = .config);
             }
         }
     } else if platform_path_equals(path, project_config.path) {
-        success, changed, there_were_warnings := load_project_config();
+        success, changed, there_were_warnings := load_project_config(project_config.path);
         if success && changed && !there_were_warnings {
             clear_user_messages(.config);
-            add_success_message("Config changes for project '%' have been applied", current_project_name, dismiss_in_seconds = 3, tag = .config);
+            add_success_message("Config changes for project '%' have been applied", get_current_project_name(), dismiss_in_seconds = 3, tag = .config);
         }
     } else {
         log_error("Attempted to refresh config from file %, but it is not a global config or a current project config", path);
         return;
     }
 
-    // Detect changes in workspace dirs
-    dirs_added   := false;
-    dirs_removed := false;
-
-    for new_dir : config.workspace.workspace_dirs {
-        exists := array_find(old_workspace_dirs, new_dir);
-        if !exists { dirs_added = true; break; }
-    }
-    for old_dir : old_workspace_dirs {
-        exists := array_find(config.workspace.workspace_dirs, old_dir);
-        if !exists { dirs_removed = true; break; }
-    }
-
-    if dirs_added || dirs_removed {
-        should_reload_workspace = true;
-        automatic_workspace_reload = true;
-        if unsaved_buffers_exist() {
-            show_unsaved_buffers_dialog(.reload_workspace);
-            clear_user_messages();
-            add_user_warning("Workspace directories have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.");
-            should_reload_workspace = false;
+    // Detect changes in workspace members or allow_ignore_lists
+    members_changed := false;
+    if config.workspace.members.count != old_workspace_members.count {
+        members_changed = true;
+    } else {
+        // Even if the workspace members are reordered we still want to refresh workspace
+        for i : 0 .. config.workspace.members.count-1 {
+            if config.workspace.members[i] != old_workspace_members[i] {
+                members_changed = true;
+                break;
+            }
         }
     }
+
+    allow_ignore_changed := false;
+    for config.workspace.allow {
+        exists := array_find(old_allow_list, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+    for old_allow_list {
+        exists := array_find(config.workspace.allow, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+
+    for config.workspace.ignore {
+        exists := array_find(old_ignore_list, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+    for old_ignore_list {
+        exists := array_find(config.workspace.ignore, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+
+    if members_changed || allow_ignore_changed {
+        if unsaved_buffers_exist() {
+            clear_user_messages();
+            if members_changed      then add_user_warning("Workspace members have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.", tag = .workspace);
+            if allow_ignore_changed then add_user_warning("Workspace ignore rules have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.", tag = .workspace);
+        }
+        defer_action_reload_workspace(automatic = true);
+    }
+
+    // Detect changes in file associations
+    file_associations_changed := config.workspace.file_associations.count != old_file_associations.count;
+    if !file_associations_changed {
+        for 0 .. old_file_associations.count - 1 {
+            if config.workspace.file_associations[it] != old_file_associations[it] {
+                file_associations_changed = true;
+                break;
+            }
+        }
+    }
+    if file_associations_changed {
+        // Reassign languages for all buffers in the workspace
+        for * buffer : open_buffers {
+            if !buffer.has_file continue;
+            lang := get_lang_from_path(buffer.file.full_path);
+            if lang != buffer.lang {
+                buffer.lang = lang;
+                retokenize(buffer);
+            }
+        }
+        add_success_message("File associations have been refreshed", dismiss_in_seconds = 3);
+    }
+
+    commands_refresh_after_config_change();
 
     dont_ignore_next_window_resize = true;
 }
 
 refresh_current_theme :: () {
     if global_config.loaded  then load_global_config(force = true);
-    if project_config.loaded then load_project_config(force = true);
+    if project_config.loaded then load_project_config(project_config.path, force = true);
 }
 
 is_our_config_file :: (path: string) -> bool {
-    return path != "" && (platform_path_equals(path, global_config.path) || platform_path_equals(path, project_config.path));
+    return path != "" && (is_current_global_config(path) || is_current_project_config(path));
+}
+
+is_current_global_config :: inline (path: string) -> bool {
+    return platform_path_equals(path, global_config.path);
+}
+
+is_current_project_config :: inline (path: string) -> bool {
+    return project_config.loaded && platform_path_equals(path, project_config.path);
 }
 
 is_current_theme :: (path: string) -> bool {
@@ -193,18 +210,7 @@ close_project :: () {
         return;
     }
 
-    success := load_global_config(force = true);
-    if success {
-        project_config.loaded = false;
-        if unsaved_buffers_exist() {
-            show_unsaved_buffers_dialog(.reload_workspace);
-        } else {
-            should_reload_workspace = true;
-        }
-        automatic_workspace_reload = false;
-    } else {
-        add_user_error("Couldn't close project because the global config failed to load", dismiss_in_seconds = 10);
-    }
+    defer_action_close_project();
 }
 
 find_font_by_name :: (name: string) -> path: string, error_msg: string /* temp */ {
@@ -266,36 +272,62 @@ apply_style :: (parsed: Parsed_Config) {
         default_font_size = font_size;
     }
 
-    // Colors
-    for parsed.colors {
-        color := map_name_to_color(it.color_name);
-        if color != .NONE {
-            COLOR_MAP[color] = it.color;
-        } else {
-            log_error("Couldn't map color name '%' to color enum value. This is a bug", it.color_name);
-        }
-    }
+    apply_parsed_colors(parsed.colors);
 
     platform_set_border_color();
 }
 
+apply_parsed_colors :: (colors: [] Parsed_Color) {
+    for colors  COLOR_MAP[it.color_id] = it.color;
+    // TODO: @colorref - resolve references
+}
+
+get_current_project_name :: () -> string {
+    if !project_config.loaded return "";
+
+    path, basename := path_decomp(project_config.path);
+
+    // If the file name is <Project Name>.focus-config, return that
+    if basename && basename != ".focus-config" return basename;
+
+    // If the file name is `.focus-config`, return the name of the parent dir
+    parent_dir := trim_right(path, "/\\");
+    _, __, ___, dir_name := path_decomp(parent_dir);
+    return dir_name;
+}
+
+get_current_project_dir :: () -> string {
+    if !project_config.loaded return "";
+
+    return trim_right(path_strip_filename(project_config.path), "/");
+}
+
 #scope_file
 
-load_config :: (file_path: string, existing: *Loaded_Config, force := false) -> Loaded_Config, changed := true {
+load_config :: (path: string, existing: *Loaded_Config, force := false) -> Loaded_Config, changed := true {
     loaded_config: Loaded_Config;
+    loaded_config.memory_pool = New(Flat_Pool);
 
-    allocator := Allocator.{ proc = flat_pool_allocator_proc, data = *loaded_config.memory_pool };
+    allocator := Allocator.{ proc = flat_pool_allocator_proc, data = loaded_config.memory_pool };
     push_allocator(allocator);
+
+    file_path := path;
 
     file_data, success_read := read_entire_file(file_path);
     if !success_read {
-        error_msg := tprint("Couldn't read the config file file '%'", file_path);
+        error_msg := tprint("Couldn't read the config file '%'", file_path);
         log_error(error_msg);
         add_user_error(error_msg);
         return loaded_config;
     }
 
-    loaded_config.path = copy_string(file_path);
+    // Convert to absolute path if we can
+    file_path = copy_string(path);
+    abs_path, ok := get_absolute_path(path,, temp);
+    if ok then file_path = copy_string(abs_path);
+    path_overwrite_separators(file_path, #char "/");
+    loaded_config.path = file_path;
+
     loaded_config.hash = calculate_hash(to_bytes(file_data));
     if loaded_config.hash == existing.hash && !force return loaded_config, false;  // unchanged so no need to parse
 
@@ -341,19 +373,22 @@ load_config :: (file_path: string, existing: *Loaded_Config, force := false) -> 
     return loaded_config;
 }
 
+free_loaded_config :: (using loaded_config: *Loaded_Config) {
+    path = "";
+    parsed_config = Parsed_Config.{};
+    if memory_pool {
+        reset(memory_pool);
+        free(memory_pool);
+        memory_pool = null;
+    }
+}
+
 merge_configs :: (dst: *Config, parsed: Parsed_Config) {
     // Completely replace the workspace subsections if present
-    if parsed.workspace_dirs then dst.workspace.workspace_dirs = parsed.workspace_dirs;
-    if parsed.ignore_dirs    then dst.workspace.ignore_dirs    = parsed.ignore_dirs;
-
-    if parsed.allow_file_extensions || parsed.allow_file_extension_wildcards {
-        dst.workspace.allow_file_extensions          = parsed.allow_file_extensions;
-        dst.workspace.allow_file_extension_wildcards = parsed.allow_file_extension_wildcards;
-    }
-    if parsed.ignore_file_extensions || parsed.ignore_file_extension_wildcards {
-        dst.workspace.ignore_file_extensions          = parsed.ignore_file_extensions;
-        dst.workspace.ignore_file_extension_wildcards = parsed.ignore_file_extension_wildcards;
-    }
+    if parsed.members           then dst.workspace.members = parsed.members;
+    if parsed.ignore            then dst.workspace.ignore  = parsed.ignore;
+    if parsed.allow             then dst.workspace.allow   = parsed.allow;
+    if parsed.file_associations then dst.workspace.file_associations = parsed.file_associations;
 
     // Build config completely overrides the previous config if present
     if parsed.build.commands then dst.build = parsed.build;
@@ -361,8 +396,8 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
     // Keymap
     merge_keymaps :: (dst_keymap: *[] Key_Mapping, src_keymap: *[..] Key_Mapping) #expand {
         if !src_keymap return;
-        array_extend(src_keymap, <<dst_keymap);
-        <<dst_keymap = <<src_keymap;
+        array_add(src_keymap, ..dst_keymap.*);
+        dst_keymap.* = src_keymap.*;
     }
     merge_keymaps(*dst.keymap.common,           *parsed.keymap_common);
     merge_keymaps(*dst.keymap.editors,          *parsed.keymap_editors);
@@ -384,6 +419,53 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
 
     // Platform config
     dst.linux = parsed.linux;
+}
+
+apply_config :: () {
+    // Make sure the values are within the acceptable range
+    old_tab_size := TAB_SIZE;
+    TAB_SIZE = clamp(cast(s32) config.settings.tab_size, 1, 100);  // be reasonable mkay (though even 100 is unreasonable)
+    if config.settings.tab_size != TAB_SIZE then add_user_warning("Tab size clamped to %", TAB_SIZE);
+
+    if old_tab_size != TAB_SIZE {
+        // Refresh all editors which have line wrap on
+        for * editor : open_editors {
+            buffer := *open_buffers[editor.buffer_id];
+            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
+        }
+    }
+
+    clamp_and_warn :: (setting: *$T, min: T, max: T, message: string) {
+        old := setting.*;
+        clamped := clamp(old, min, max);
+        if clamped != old {
+            add_user_warning(message, clamped);
+            setting.* = clamped;
+        }
+    }
+
+    clamp_and_warn(*config.settings.line_height_scale_percent,  50,  1000,        "Line height scale clamped to % percent");
+    clamp_and_warn(*config.settings.editor_history_size,        4,   1024 * 1024, "Editor history size clamped to %");
+    clamp_and_warn(*config.settings.build_panel_height_percent, 10,  100,         "Build panel height clamped to % percent");
+    clamp_and_warn(*config.settings.build_panel_width_percent,  10,  100,         "Build panel width clamped to % percent");
+
+    if config.settings.window_width  != -1    clamp_and_warn(*config.settings.window_width,  100, 10000, "Window width clamped to %");
+    if config.settings.window_height != -1    clamp_and_warn(*config.settings.window_height, 100, 3000,  "Window height clamped to %");
+    if config.settings.window_x      != -1000 clamp_and_warn(*config.settings.window_x,     -500, 10000, "Window X clamped to %");
+    if config.settings.window_y      != -1000 clamp_and_warn(*config.settings.window_y,     -500, 3000,  "Window Y clamped to %");
+
+    build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
+    build_panel_height = config.settings.build_panel_height_percent / 100.0;
+    build_panel_height_anim.target = build_panel_height;
+    build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
+
+    // Must do after the validation
+    init_fonts_and_dependent_things();
+
+    platform_apply_config();
+
+    array_reset_keeping_memory(*active_hold_actions);  // NOTE: this doesn't actually stop the actions, it's just here so that we don't
+                                                       //       keep pointers to old keymaps when the config is reloaded
 }
 
 load_font_by_name :: (name: string) -> font_data: string, success: bool {
@@ -413,9 +495,6 @@ font_cache: Table(string, string);  // path -> file data
 // Currently active config
 config: Config;
 
-// If nonempty, then there's an active project
-current_project_name: string;
-
 // Info about currently loaded configs, useful when reloading etc.
 global_config:  Loaded_Config;
 project_config: Loaded_Config;
@@ -441,7 +520,7 @@ Loaded_Config :: struct {
     path: string;
     hash: u64;
     parsed_config: Parsed_Config;
-    memory_pool: Flat_Pool;  // must be valid for the lifetime of the config
+    memory_pool: *Flat_Pool;  // must be valid for the lifetime of the config
 }
 
 Linux_Config :: struct {
@@ -451,58 +530,85 @@ Linux_Config :: struct {
 }
 
 Workspace :: struct {
-    workspace_dirs:                  [] string;
-    ignore_dirs:                     [] string;
-    allow_file_extensions:           [] string;
-    ignore_file_extensions:          [] string;
-    allow_file_extension_wildcards:  [] string;
-    ignore_file_extension_wildcards: [] string;
+    members:            [] string;
+    ignore:             [] string;
+    allow:              [] string;
+    file_associations:  [] File_Association;
 }
 
 Settings :: struct {
-    maximize_on_start                       := false;
-    open_on_the_biggest_monitor             := true;
-    cursor_as_block                         := true;
-    cursor_blink_time_in_seconds            := 5;
-    highlight_selection_occurrences         := true;
-    disable_that_annoying_paste_effect      := false;
-    disable_file_open_close_animations      := false;
-    double_shift_to_search_in_workspace     := false;
-    tab_size                                := 4;
-    insert_spaces_when_pressing_tab         := true;
-    strip_trailing_whitespace_on_save       := false;
-    smooth_scrolling                        := true;
-    scroll_beyond_last_line                 := true;
-    line_height_scale_percent               := 120;
-    max_editor_width                        := -1;
-    can_cancel_go_to_line                   := true;
-    copy_whole_line_without_selection       := false;
-    editor_history_size                     := 128;
-    line_wrap_is_on_by_default              := false;
-    show_line_numbers                       := false;
-    dark_titlebar                           := false;  // TODO: fix the issues with window resize first
-    colored_titlebar                        := true;
-    hide_mouse_when_typing                  := true;
-    highlight_line_with_cursor              := false;
-    draw_indent_guides                      := false;
-    auto_surround_with_brackets_and_quotes  := false;
-    auto_close_brackets                     := false;
-    highlight_matching_brackets             := false;
-    prefer_system_file_dialogs              := false;
-    show_cursors_off_screen                 := true;
-    persist_local_search_results            := false;
+    maximize_on_start                                       := false;
+    open_on_the_biggest_monitor                             := true;
+    window_width                                            := -1;
+    window_height                                           := -1;
+    window_x                                                := -1000;  // using -1000 because -1 could be a valid value someone might want
+    window_y                                                := -1000;
+    cursor_as_block                                         := true;
+    cursor_blink_time_in_seconds                            := 5;
+    highlight_selection_occurrences                         := true;
+    highlight_line_with_cursor                              := false;
+    highlight_matching_brackets                             := false;
+    disable_that_annoying_paste_effect                      := false;
+    disable_file_open_close_animations                      := false;
+    disable_viewport_chasing_cursor_near_the_edge           := false;
+    double_shift_to_search_in_workspace                     := false;
+    tab_size                                                := 4;
+    insert_spaces_when_pressing_tab                         := true;
+    strip_trailing_whitespace_on_save                       := false;
+    insert_final_newline_on_save                            := false;
+    smooth_scrolling                                        := true;
+    scroll_beyond_last_line                                 := true;
+    line_height_scale_percent                               := 120;
+    max_editor_width                                        := -1;
+    can_cancel_go_to_line                                   := true;
+    copy_whole_line_without_selection                       := false;
+    editor_history_size                                     := 128;
+    line_wrap_is_on_by_default                              := false;
+    show_line_numbers                                       := false;
+    dark_titlebar                                           := false;
+    colored_titlebar                                        := true;
+    hide_mouse_when_typing                                  := true;
+    draw_indent_guides                                      := false;
+    auto_surround_with_brackets_and_quotes                  := false;
+    auto_close_brackets                                     := false;
+    prefer_system_file_dialogs                              := false;
+    show_cursors_off_screen                                 := true;
+    persist_local_search_results                            := false;
+    search_is_case_sensitive_when_uppercase_present         := false;
+    show_selected_text_length                               := false;
+    load_most_recent_project_on_start                       := false;
 
-    build_panel_width_percent               := 50;
-    build_panel_height_percent              := 50;
-    build_panel_stays_in_one_place          := false;
-    build_panel_line_wrap_always_on         := true;
+    build_panel_width_percent                               := 50;
+    build_panel_height_percent                              := 50;
+    build_panel_stays_in_one_place                          := false;
+    build_panel_line_wrap_always_on                         := true;
 
-    save_current_buffer_on_build            := false;
-    save_all_file_backed_buffers_on_build   := false;
+    save_current_buffer_on_build                            := false;
+    save_all_file_backed_buffers_on_build                   := false;
+
+    status_bar_position                                     := Status_Bar_Position.bottom;
+    color_preview_popup                                     := Color_Preview_Popup.enabled;
+    projects_sorting_order                                  := Projects_Sorting_Order.most_recent_first;
 
     // TODO
     // convert_tabs_to_spaces_on_load:     false
     // load_last_session_on_start:         true
+}
+
+Status_Bar_Position :: enum {
+    bottom;
+    top;
+}
+
+Color_Preview_Popup :: enum {
+    enabled;
+    minimized;
+    disabled;
+}
+
+Projects_Sorting_Order :: enum {
+    most_recent_first;
+    alphabetical;
 }
 
 Keymap :: struct {
@@ -512,6 +618,15 @@ Keymap :: struct {
     search_dialog:    [] Key_Mapping;
 
     build:            [] Key_Mapping;  // treated specially, it's not in the keymap config, but in the build config for convenience
+}
+
+File_Association :: struct {
+    wildcard: string;
+    lang: Buffer.Lang;
+}
+
+operator== :: (a: File_Association, b: File_Association) -> bool {
+    return a.wildcard == b.wildcard && a.lang == b.lang;
 }
 
 Build_Config :: struct {
@@ -525,19 +640,21 @@ Build_Config :: struct {
 Build_Command :: struct {
     name:                   string;  @dontparse
 
-    build_command:          string;
-    build_working_dir:      string;
+    build_command:                      string;
+    build_working_dir:                  string;
 
-    run_command:            string;
-    run_working_dir:        string;
+    run_command:                        string;
+    run_working_dir:                    string;
 
-    error_regex:            string;
-    auto_jump_to_error:     bool;
+    error_regex:                        string;
 
-    open_panel_on_build:    bool;
-    close_panel_on_success: bool;
+    auto_jump_to_error:                 bool;
+    open_panel_on_build:                bool;
+    close_panel_on_success:             bool;
+    clear_build_output_before_running:  bool;
+    substitute_variables:               bool = true;
 
-    timeout_in_seconds:     int = -1;
+    timeout_in_seconds:                 int = -1;
 }
 
 DEFAULT_CONFIG_FILE_DATA  :: #run read_entire_file(tprint("config/%", DEFAULT_CONFIG_NAME));

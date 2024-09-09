@@ -4,7 +4,7 @@ platform_apply_config :: () {
 
 platform_setup :: inline () {
     app_id     :: "dev.focus-editor.focus";  // needs to be lower-case as (some?) Wayland compositors seem to lower-case app ids anyway and we need the desktop entry file name to match the app id
-    app_ver_id :: 2;   // ID that we can increment if we need to change the desktop entry in any way
+    app_ver_id :: 3;   // ID that we can increment if we need to change the desktop entry in any way
     ver_id     :: #run sprint("%-%", app_id, app_ver_id);
     ver_id_key :: #run sprint("X-Focus-Ver-Id=%", ver_id);
 
@@ -54,9 +54,10 @@ NoDisplay=true
 DBusActivatable=false
 Exec=focus-linux
 Icon=%
+StartupWMClass=%
 %
 DONE;
-        desktop_entry_data := sprint(desktop_entry_fmt, icon_path, ver_id_key);
+        desktop_entry_data := sprint(desktop_entry_fmt, icon_path, app_id, ver_id_key);
         write_entire_file(desktop_entry_path, desktop_entry_data);
         free(desktop_entry_data);
     }
@@ -79,7 +80,7 @@ DONE;
     flags : LD.Init_Flags = 0;
     cstr = getenv("FOCUS_LD_FLAGS");
     flags_s := ifx cstr then to_lower_copy_new(to_string(cstr),, allocator = temp) else "";
-    flags_a := split(flags_s, ",");
+    flags_a := split(flags_s, ",",, allocator = temp);
     for flag : flags_a {
         if flag == {
             case "xcb-pure"; flags |= .XCB_Pure;
@@ -110,13 +111,21 @@ DONE;
 
 platform_data_dir :: () -> string {
     data_dir := sprint("%/focus-editor", XDG.get_path(.DATA_HOME));
+    #if DEBUG {
+        data_dir = sprint("%/debug", data_dir);
+    }
     make_directory_if_it_does_not_exist(data_dir);
+
     return data_dir;
 }
 
 platform_config_dir :: () -> string {
     config_dir := sprint("%/focus-editor", XDG.get_path(.CONFIG_HOME));
+    #if DEBUG {
+        config_dir = sprint("%/debug", config_dir);
+    }
     make_directory_if_it_does_not_exist(config_dir);
+
     return config_dir;
 }
 
@@ -244,6 +253,10 @@ platform_path_equals :: inline (path_a: string, path_b: string) -> bool {
     return path_a == path_b;
 }
 
+platform_path_begins_with :: inline (path: string, subpath: string) -> bool {
+    return begins_with(path, subpath);
+}
+
 platform_path_contains :: inline (path: string, subpath: string) -> bool {
     return contains(path, subpath);
 }
@@ -340,7 +353,7 @@ platform_get_troubleshooting_info :: () -> string /* temp */ {
             }
             if !rs break;
             array_reserve(*data, data.count + rs);
-            memcpy(data.data + data.count, buff.data, rs);
+            focus_memcpy(data.data + data.count, buff.data, rs);
             data.count += rs;
         }
 
@@ -424,9 +437,14 @@ platform_get_troubleshooting_info :: () -> string /* temp */ {
     return ret;
 }
 
+/*
+ * `Linux_Display` is empty on platforms other than Linux, so importing it should be basically
+ * free on Windows/MacOS.
+ */
+LD :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
+
 #scope_file
 
-LD  :: #import "Linux_Display";
 XDG :: #import "XDG";
 
 #import "POSIX";

@@ -1,11 +1,53 @@
 init_workspace :: () {
-    for path : config.workspace.workspace_dirs {
-        add_directory_to_workspace(path);
+    for path : config.workspace.members {
+        if file_exists(path) && !is_directory(path) {
+            add_file_to_workspace(path);
+        } else {
+            add_directory_to_workspace(path);
+        }
+    }
+    // Change working directory to the first directory in the list
+    working_dir := get_working_directory_from_workspace(config.workspace.members);
+    if working_dir {
+        set_working_directory(working_dir);
+    } else {
+        set_working_directory(data_dir);
     }
 }
 
+get_working_directory_from_workspace :: (members: [] string) -> string {
+    if members {
+        first_member := members[0];
+        if is_directory(first_member) return first_member;
+        if file_exists(first_member)  return path_strip_filename(first_member);
+    }
+    return "";
+}
+
+add_file_to_workspace :: (path: string) {
+    full_path, success := get_absolute_path(path,, temp);
+
+    if !success || !file_exists(full_path) {
+        error_msg := tprint("Couldn't add % to workspace. File doesn't exist or is invalid.", path);
+        add_user_error(error_msg, dismiss_in_seconds = 10);
+        log_error(error_msg);
+        return;
+    }
+
+    path_overwrite_separators(full_path, #char "/");
+
+    already_exists := false;
+    for project_files {
+        if platform_path_equals(full_path, it) {
+            already_exists = true;
+            break;
+        }
+    }
+    if !already_exists then array_add(*project_files, copy_string(full_path));
+}
+
 add_directory_to_workspace :: (path: string, index := -1) {
-    full_path, success := get_absolute_path(path);
+    full_path, success := get_absolute_path(path,, temp);
     full_path = copy_string(full_path);
     path_overwrite_separators(full_path, #char "/");
 
@@ -53,10 +95,11 @@ add_directory_to_workspace :: (path: string, index := -1) {
     }
 }
 
-start_initial_workspace_scan :: () {
+start_workspace_scan :: () {
     file_list_ready = false;
     workspace_scan_complete = false;
     array_reset(*files_to_scan);
+    for project_files  array_add(*files_to_scan, copy_string(it));
 
     // Get the list of all files in the project asynchronously (depending on the size it can cause a startup delay otherwise)
     file_list_thread_group = Thread_Group.{};  // if we don't do this it can't be reused
@@ -84,6 +127,7 @@ workspace_update :: () {
 
                 // Start the actual scanning of the workspace
                 num_jobs_to_complete = 0;
+                num_jobs_completed   = 0;
 
                 num_cpus := get_num_cpus();
                 num_threads := max(num_cpus - 1, 1);
@@ -107,7 +151,9 @@ workspace_update :: () {
                     if count <= 0 break;
                     << file_range = array_view(files_to_scan, start, count);
 
-                    add_work(*scanner_thread_group, file_range, sprint("Scan [%:%]", start, start + count));
+                    logging_name := sprint("Scan [%:%]", start, start + count);
+                    this_allocation_is_not_a_leak(logging_name.data);  // this is actually a leak, but Thread_Group won't free it and we can't seem to be able to either
+                    add_work(*scanner_thread_group, file_range, logging_name);
 
                     num_jobs_to_complete += 1;
                 }
@@ -150,7 +196,7 @@ workspace_update :: () {
 
         visitor_func :: (file: *File_Visit_Info, userdata: *void) {
             if file.is_directory {
-                if should_ignore_dir(file.full_name) {
+                if !should_descend_into_dir(file.full_name) {
                     file.descend_into_directory = false;
                     #if DEBUG_FILE_REFRESH log("% - not descending into the directory", file.full_name);
                     return;
@@ -190,125 +236,136 @@ workspace_update :: () {
     watchers.external_file_modified = "";
 }
 
-hard_reload_workspace :: () {
+reload_workspace :: (automatic := false) {
     // Make sure no threads are running
     if file_list_thread_group.initted then shutdown(*file_list_thread_group);
     if scanner_thread_group.initted   then shutdown(*scanner_thread_group);
 
+    // Deinit things
     deinit_finder();
+    hide_build_panel();
     deinit_build_system();
+    deinit_color_preview();
     deinit_open_file_dialog();
     deinit_file_watcher();
+    deinit_buffers();
+    editor_history.initted = false;
 
-    old_editor_state := remember_visible_editors_and_buffers();
-
-    // Remove all editors and buffers (safe to do now without any threads)
-    remove_all_editors();
-    remove_all_buffers();
-
-    // Start again
+    // Reinit things
     init_file_watcher();
     array_reset_keeping_memory(*project_dirs);
+    for project_files  free(it);
+    array_reset_keeping_memory(*project_files);
     init_workspace();
     init_buffers();
-    init_build_system();
-    update_window_title();
-    if automatic_workspace_reload {
-        reopen_visible_editors(old_editor_state);
+
+    // Preserve all editors and buffers which belong to the new workspace. Remove the rest.
+    new_open_editors: [..] Editor;
+    new_open_buffers: Simple_Bucket_Array(Buffer, items_per_bucket = 1024, max_buckets = 1024);
+    new_most_recent_buffers: [..] s64;
+
+    editor_id_map: Table(s64, s64);
+    editor_id_map.allocator = temp;
+
+    for * buffer, old_buffer_id : open_buffers {
+        buffer := *open_buffers[old_buffer_id];
+        if should_keep_buffer_when_reloading_workspace(buffer) {
+            new_buffer_id := new_open_buffers.count;
+
+            if buffer.has_file {
+                table_add(*buffers_table, copy_string(buffer.file.full_path), new_buffer_id);
+                start_watching_file_if_not_already(buffer.file.full_path);
+                buffer.file = get_file_info_from_full_path(buffer.file.full_path);  // refresh file info to reflect new project dirs
+            }
+
+            bucket_array_add(*new_open_buffers, buffer.*);
+
+            if array_unordered_remove_by_value(*most_recent_buffers, old_buffer_id, stop_after_first = true) {
+                array_add(*new_most_recent_buffers, new_buffer_id);
+            }
+
+            // @speed: O(n*m) here. Hopefully OK because people don't create as many editors as there are buffers
+            for editor, old_editor_id : open_editors {
+                if editor.buffer_id != old_buffer_id continue;
+
+                new_editor := editor;
+                new_editor.buffer_id = new_buffer_id;
+                new_editor_id := new_open_editors.count;
+                array_add(*new_open_editors, new_editor);
+
+                table_add(*editor_id_map, old_editor_id, new_editor_id);
+            }
+
+        } else {
+            free_buffer(buffer);
+        }
+    }
+
+    array_reset(*open_editors);
+    open_editors = new_open_editors;
+
+    array_reset(*most_recent_buffers);
+    most_recent_buffers = new_most_recent_buffers;
+
+    bucket_array_reset(*open_buffers);
+    open_buffers = new_open_buffers;
+
+    // Reopen visible editors, if any of them are preserved
+    if editors.layout != .None {
+        new_active, active_preserved := table_find(*editor_id_map, editors.active);
+        new_left,   left_preserved   := table_find(*editor_id_map, editors.left);
+        new_right,  right_preserved  := table_find(*editor_id_map, editors.right);
+
+        if active_preserved then editors.active = new_active;
+
+        if left_preserved && right_preserved {
+            // Keep the layout
+            editors.left  = new_left;
+            editors.right = new_right;
+        } else if left_preserved {
+            editors.layout = .Single;
+            editors.left   = new_left;
+            editors.right  = new_left;
+            editors.active = new_left;
+        } else if right_preserved {
+            editors.layout = .Single;
+            editors.left   = new_right;
+            editors.right  = new_right;
+            editors.active = new_right;
+        } else {
+            editors = Editor_State.{};  // reset everything
+        }
+        if editors.left == editors.right && editors.layout == .Double {
+            editors.active = editors.left;
+            editors.layout = .Single;
+        }
+    }
+
+    if !automatic then show_open_file_dialog(.search);
+
+    init_build_system();  // must do after we've cleared editors and buffers
+
+    if editors.layout == .None {
+        update_window_title();
     } else {
-        show_open_file_dialog(.search);
+        make_editor_active(editors.active);
     }
-    start_initial_workspace_scan();
 
-    add_success_message("Workspace has been reloaded", dismiss_in_seconds=3);
+    start_workspace_scan();
+
+    clear_user_messages(.workspace);
+    add_success_message("Workspace has been reloaded", dismiss_in_seconds = 3);
 }
 
-remember_visible_editors_and_buffers :: () -> Visible_Editor_State {
-    save_editor_state :: (state: *Visible_Editor_State.State, editor: *Editor, buffer: *Buffer) {
-        state.file_path = copy_temporary_string(buffer.file.full_path);
-        state.cursors = NewArray(editor.cursors.count, Cursor, initialized = false);
-        for * cursor, i : state.cursors { cursor.* = editor.cursors[i]; }
-        state.main_cursor = editor.main_cursor;
-        state.viewport = editor.viewport;
-    }
+should_keep_buffer_when_reloading_workspace :: (using buffer: Buffer) -> bool {
+    if !has_file return false;  // if this is a special buffer we can recreate it later. If the buffer is unsaved, we're throwing it away (because the user decided not to save it)
 
-    using state: Visible_Editor_State;
+    if is_our_config_file(file.full_path) return true;
+    if should_ignore_file(file.full_path) return false;
 
-    layout = editors.layout;
+    for project_files  if platform_path_equals(file.full_path, it) return true;
 
-    if editors.layout == {
-        case .None;     // nothing to do
-        case .Single;
-            editor := *open_editors[editors.active];
-            buffer := *open_buffers[editor.buffer_id];
-            if buffer.has_file && !buffer.modified {
-                save_editor_state(*left, editor, buffer);
-            } else {
-                layout = .None;  // we don't reopen modified buffers, at least for now
-            }
-        case .Double;
-            left_editor  := *open_editors[editors.left];
-            left_buffer  := *open_buffers[left_editor.buffer_id];
-
-            right_editor := *open_editors[editors.right];
-            right_buffer := *open_buffers[right_editor.buffer_id];
-
-            if left_buffer.has_file && !left_buffer.modified && right_buffer.has_file && !right_buffer.modified {
-                save_editor_state(*left,  left_editor, left_buffer);
-                save_editor_state(*right, right_editor, right_buffer);
-            } else if left_buffer.has_file && !left_buffer.modified {
-                save_editor_state(*left, left_editor, left_buffer);
-                layout = .Single;
-            } else if right_buffer.has_file && !right_buffer.modified {
-                save_editor_state(*left, right_editor, right_buffer);
-                layout = .Single;
-            } else {
-                layout = .None;
-            }
-
-            state.left_active = editors.active == editors.left;
-    }
-
-    return state;
-}
-
-reopen_visible_editors :: (using old_state: Visible_Editor_State) {
-    restore_editor_state :: (state: Visible_Editor_State.State, placement: Editor_Placement) {
-        editors_open_file(state.file_path, placement);
-        editor := *open_editors[editors.active];
-        restore_cursor_state(editor, state.cursors);
-        editor.main_cursor = state.main_cursor;
-        editor.viewport = state.viewport;
-        start_watching_file_if_not_already(state.file_path);
-    }
-
-    editors = Editor_State.{};
-    editors.layout = layout;
-
-    if layout == {
-        case .None; return;
-        case .Single;
-            restore_editor_state(left, .in_place);
-        case .Double;
-            restore_editor_state(left,  .left);
-            restore_editor_state(right, .right);
-            if left_active then make_editor_active(editors.left);;
-    }
-    redraw_requested = true;
-}
-
-Visible_Editor_State :: struct {
-    layout: Editor_State.Layout;
-    left_active: bool;
-    left: State;
-    right: State;
-
-    State :: struct {
-        file_path: string;
-        cursors: [] Cursor;
-        main_cursor: s64;
-        viewport: Viewport;
-    }
+    return dir_is_within_project(get_parent_dir_path(file.full_path));
 }
 
 start_watching_file_if_not_already :: (file_path: string) {
@@ -326,7 +383,7 @@ start_watching_file_if_not_already :: (file_path: string) {
         }
         log("Started watching external directory '%'", parent_dir);
     }
-    full_path, success := get_absolute_path(file_path);
+    full_path, success := get_absolute_path(file_path,, temp);
     if !success {
         log_error("Couldn't start watching file % because it's not found", file_path);
         return;
@@ -337,7 +394,7 @@ start_watching_file_if_not_already :: (file_path: string) {
 }
 
 stop_watching_file :: (file_path: string) {
-    full_path, success := get_absolute_path(file_path);
+    full_path, success := get_absolute_path(file_path,, temp);
     if !success then return;
     path_overwrite_separators(full_path, #char "/");
 
@@ -379,6 +436,7 @@ deinit_file_watcher :: () {
     if !watchers.initialized return;
     deinit(watchers.project_watcher);
     deinit(watchers.external_watcher);
+    for watch_files  free(it);
     array_reset_keeping_memory(*watch_files);
     watchers.initialized = false;
 }
@@ -388,14 +446,10 @@ deinit_file_watcher :: () {
 file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thread_Continue_Status {
     reset(*scan_memory_pool);
     scan_pool_allocator := get_scan_pool_allocator();
-    push_allocator(scan_pool_allocator);
 
-    maybe_add_file_to_scan_list :: (file: *File_Visit_Info, userdata: *void) {
+    maybe_add_file_to_scan_list :: (file: *File_Visit_Info, userdata: Allocator) {
         if file.is_directory {
-            if should_ignore_dir(file.full_name) {
-                file.descend_into_directory = false;
-                return;
-            }
+            if !should_descend_into_dir(file.full_name) then file.descend_into_directory = false;
             return;
         }
         if file.is_symlink return;
@@ -404,10 +458,10 @@ file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> 
         // because it may involve reading the file and checking for zeroes,
         // and we'd rather it's done in threads (also if later we find there are no
         // zeroes in the file then the file data will be in cache ready to use)
-        array_add(*files_to_scan, copy_string(file.full_name));
+        array_add(*files_to_scan, copy_string(file.full_name,, allocator=userdata));
     }
 
-    for project_dirs visit_files(it.path, recursive = true, null, maybe_add_file_to_scan_list, visit_directories = true);
+    for project_dirs visit_files(it.path, recursive = true, scan_pool_allocator, maybe_add_file_to_scan_list, visit_directories = true);
 
     return .STOP;  // don't need you no mo
 }
@@ -452,7 +506,7 @@ file_change_callback :: (watcher: *File_Watcher(void), change: *File_Change, use
         print_to_builder(*b, "%", <<change);
         change_kind := "Project file";
         if watcher == *watchers.external_watcher change_kind = "External file";
-        defer log("% change: %\n", change_kind, builder_to_string(*b, allocator = temp));
+        defer log("% change: %\n", change_kind, builder_to_string(*b,, allocator = temp));
     }
 
     maybe_add_to_queue :: (dir: string) {
@@ -468,7 +522,7 @@ file_change_callback :: (watcher: *File_Watcher(void), change: *File_Change, use
     }
 
     // If the change is in one of the ignored dirs, ignore it
-    if should_ignore_dir(change.full_path) && !is_our_config_file(change.full_path) {
+    if should_ignore_path(change.full_path) && !is_our_config_file(change.full_path) {
         #if DEBUG_FILE_REFRESH append(*b, " - ignore because of dir");
         return;
     }

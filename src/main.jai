@@ -1,12 +1,9 @@
 main :: () {
-    #if DEBUG {
+    #if DEBUG && OS != .LINUX {
         UA :: #import "Unmapping_Allocator";
         context.allocator = UA.get_unmapping_allocator();
-
-        // OA :: #import "Overwriting_Allocator";
-        // context.allocator = OA.get_overwriting_allocator();
-
     }
+
     focus_allocator = context.allocator;  // to be used as a default allocator where we need it
 
     cpu_info = get_cpu_info();
@@ -39,50 +36,98 @@ main :: () {
     fill_in_missing_default_themes();
 
     init_file_watcher();
+    defer deinit_file_watcher();
+
     init_buffers();
     load_global_config(fallback_to_default_on_failure = true);
-    init_workspace();
-    init_build_system();
 
     window_x, window_y, window_width, window_height = platform_get_centered_window_dimensions(config.settings.open_on_the_biggest_monitor);
+
+    if config.settings.window_width  > 0 then window_width  = xx config.settings.window_width;
+    if config.settings.window_height > 0 then window_height = xx config.settings.window_height;
+    if config.settings.window_x != -1000 then window_x      = xx config.settings.window_x;
+    if config.settings.window_y != -1000 then window_y      = xx config.settings.window_y;
 
     window_generic_title = ifx DEBUG then "Focus (debug mode)" else "Focus";
     platform_create_window();
 
-    init_session_with_no_guidance :: () #expand {
+    // Process command line parameters
+    focus_executable_args = get_command_line_arguments();
+
+    args := focus_executable_args;
+    if args.count == 3 && args[1] == "-project" {
+        // - `focus.exe -project "Project Name"` or `focus.exe -project <path/to/project>` will load a project. No other arguments are allowed.
+        project := args[2];
+        success: bool;
+        if ends_with(project, ".focus-config") {
+            success = load_project_config(project);
+        } else {
+            config_path := tprint("%/%.focus-config", projects_dir, project);
+            success = load_project_config(config_path);
+        }
+        if !success then add_user_error("Couldn't load project config '%' provided in the command line arguments", project);
+    }
+    else if args.count >= 2 {
+        // - `focus.exe <path1> <path2> ...` will open files or add directories to the workspace
+        dirs_from_args: [..] string;
+        dirs_from_args.allocator = temp;
+
+        for path : array_view(args, 1, args.count - 1) {
+            if is_directory(path) {
+                dir := trim_right(path, "\\/");
+                project_config_path := tprint("%/.focus-config", dir);
+                if !project_config.loaded && file_exists(project_config_path) {
+                    success := load_project_config(project_config_path);
+                    if !success then add_user_error("Tried to load project config from % but couldn't due to errors", project_config_path);
+                } else {
+                    array_add(*dirs_from_args, dir);
+                }
+            } else if file_exists(path) {
+                editors_open_file(path);
+            } else {
+                if path == "-project" {
+                    add_user_error("The '-project' command line argument is used incorrectly.\nCorrect usage: focus -project <project name or path>.\nNo other arguments are allowed in this case.");
+                } else if starts_with(path, "-") {
+                    add_user_error("Invalid command line parameter '%'.", path);
+                } else {
+                    add_user_error("Invalid command line parameter '%'.\nAttempted to load it as a file or a directory, but it doesn't exist.", path);
+                }
+            }
+        }
+
+        for < dir : dirs_from_args  add_directory_to_workspace(dir, index = 0);
+    }
+
+    // Maybe load project from a .focus-config file in the current directory
+    if !project_config.loaded {
+        if file_exists(".focus-config") {
+            project_config_path, success := get_absolute_path(".focus-config",, temp);
+            if success {
+                success := load_project_config(project_config_path);
+                if !success then add_user_error("Tried to load project config from % but couldn't due to errors", project_config_path);
+            }
+        }
+    }
+
+    if !project_config.loaded && !project_dirs {
         session = maybe_load_previous_session();
-        if session.project {
-            success := load_project_config(session.project);
-            if !success then log_error("Couldn't load project config '%'", session.project);
-        }
-    }
 
-    args := get_command_line_arguments();
-
-    if args.count >= 2 {
-        session_initialized := false;
-        for < i: args.count - 1..1 {
-            if is_directory(args[i]) {
-                if !session_initialized {
-                    session = start_fresh_session();
-                    session_initialized = true;
-                }
-                add_directory_to_workspace(args[i], index = 0);
+        // Maybe load most recent project
+        if config.settings.load_most_recent_project_on_start {
+            most_recent_projects := get_most_recent_projects();
+            if most_recent_projects {
+                success := load_project_config(most_recent_projects[0]);
+                if !success then add_user_error("Couldn't load most recent project '%'", most_recent_projects[0]);
             }
         }
-        for i: 1..args.count - 1 {
-            if file_exists(args[i]) && !is_directory(args[i]) {
-                if !session_initialized {
-                    session = start_fresh_session();
-                    session_initialized = true;
-                }
-                editors_open_file(args[i]);
-            }
-        }
-        if !session_initialized init_session_with_no_guidance();
     } else {
-        init_session_with_no_guidance();
+        session = start_fresh_session();
     }
+
+    if project_config.loaded then update_window_title();
+
+    init_workspace();
+    init_build_system();
 
     // This may generate window resize events if DPI/scaling settings need to be
     // applied, so make sure to only call it after the window is created.
@@ -94,6 +139,13 @@ main :: () {
         should_maximize := config.settings.maximize_on_start;
     } else {
         if config.settings.maximize_on_start then platform_maximize_window(window);
+    }
+    #if OS == .WINDOWS {
+        // A hacky workaround to display the dark title bar properly. Nothing else we've tried worked
+        if config.settings.dark_titlebar && !config.settings.maximize_on_start {
+            ShowWindow(window, SW_HIDE);
+            ShowWindow(window, SW_SHOW);
+        }
     }
 
     platform_enable_drag_and_drop(window);
@@ -109,7 +161,7 @@ main :: () {
     if !check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AES) then log_error("CPU doesn't support AES instructions. A slower hash function will be used.");
 
     // Requires the session to be created and the configs to be loaded
-    start_initial_workspace_scan();
+    start_workspace_scan();
 
     dpi_scale = platform_get_dpi_scale(window);
     init_fonts_and_dependent_things();
@@ -124,7 +176,7 @@ main :: () {
         press_count := 0;
     };
 
-    while !should_quit {
+    while true {
         if !redraw_requested platform_wait_message();
 
         Input.update_window_events();
@@ -156,9 +208,6 @@ main :: () {
 
         update_mouse_state();
 
-        screen_with_title_bar := screen;
-        screen_with_title_bar.h += 200;  // should be enough to include the title bar
-
         redraw_requested = false;
         window_resized   = false;
         dont_scroll_this_frame = false;
@@ -183,12 +232,10 @@ main :: () {
         num_text_input_events_to_ignore := 0;
 
         for event : Input.events_this_frame {
-            if should_quit break;  // don't process any other events we might have in this frame if the previous one set this to true
-
             // General events
             if event.type == {
                 case .QUIT;
-                    should_quit = true;
+                    defer_action_quit();
 
                 case .KEYBOARD;
                     // Double shift click
@@ -236,35 +283,45 @@ main :: () {
             // Note that the active widget may change during the frame, so the following events
             // will be sent to the new widget, that's why we check global widget for each event.
             if #complete active_global_widget == {
-                case .editors;                  handled = editors_handle_event(event);
-                case .finder;                   handled = finder_handle_event(event);
-                case .open_file_dialog;         handled = open_file_dialog_handle_event(event);
-                case .delete_file_dialog;       handled = delete_file_dialog_handle_event(event);
-                case .go_to_line_dialog;        handled = go_to_line_dialog_handle_event(event);
-                case .open_project_dialog;      handled = open_project_dialog_handle_event(event);
-                case .unsaved_buffers_dialog;   handled = unsaved_buffers_dialog_handle_event(event);
-                case .confirm_overwrite_dialog; handled = confirm_overwrite_dialog_handle_event(event);
-                case .commands_dialog;          handled = commands_dialog_handle_event(event);
-                case .theme_dialog;             handled = theme_dialog_handle_event(event);
+                case .editors;                      handled = editors_handle_event(event);
+                case .finder;                       handled = finder_handle_event(event);
+                case .open_file_dialog;             handled = open_file_dialog_handle_event(event);
+                case .delete_file_dialog;           handled = dialog_handle_event(*delete_file_dialog, event);
+                case .go_to_line_dialog;            handled = go_to_line_dialog_handle_event(event);
+                case .switch_to_project_dialog;     handled = switch_to_project_dialog_handle_event(event);
+                case .unsaved_buffers_dialog;       handled = unsaved_buffers_dialog_handle_event(event);
+                case .confirm_overwrite_dialog;     handled = dialog_handle_event(*confirm_overwrite_dialog, event);
+                case .commands_dialog;              handled = dialog_handle_event(*commands_dialog, event);
+                case .kill_running_command_dialog;  handled = dialog_handle_event(*kill_running_command_dialog, event);
+                case .theme_dialog;                 handled = theme_dialog_handle_event(event);
+                case .language_dialog;              handled = language_dialog_handle_event(event);
             }
 
             if !handled {
                 action := map_event_to_action(event, Action_Editors);
                 handled = handle_common_editor_action(action);
             }
-            if !handled then handled = maybe_execute_a_build_command(event);
+            if !handled {
+                action := map_event_to_action(event, Action_Build);
+                handled = maybe_execute_a_build_command(action);
+            }
 
             if handled && event.type == .KEYBOARD then num_text_input_events_to_ignore = event.text_input_count;
+            #if OS == .MACOS {
+                // @Hack:
+                // On macOS the shortcut Cmd-Q seems to be handled by the system.
+                // If the user presses Cmd-Q, we first get a normal .KEYBOARD and a .TEXT_INPUT events, then a .QUIT event.
+                // Since we're not handling the .KEYBOARD event, we're not ignoring the following .TEXT_INPUT, which
+                // sometimes results in the letter q being pressed.
+                // Unless there's a good simple way to avoid that we have to filter it out ourselves
+                if event.type == .KEYBOARD && event.key_code == #char "Q" && event.key_pressed && event.cmd_meta_pressed then num_text_input_events_to_ignore += 1;
+            }
 
             key_sequence_input_process_event(event, handled);
         }
 
-        if should_quit && unsaved_buffers_exist() && !force_quit {
-            show_unsaved_buffers_dialog();
-            should_quit = false;
-        }
+        execute_deferred_actions();
 
-        process_buffer_save_queue();
         build_system_update();
         maybe_revert_temporary_theme();
         refresh_open_buffers();
@@ -273,16 +330,7 @@ main :: () {
 
         pointer_end_frame();
 
-        // TODO:
-        // maybe_save_editor_state_into_session();
-
         maybe_save_editor_history();
-
-        if should_reload_workspace {
-            hard_reload_workspace();
-            should_reload_workspace = false;
-            redraw_requested = true;
-        }
 
         reset_temporary_storage();
 
@@ -295,26 +343,34 @@ main :: () {
 
         // #if DEBUG FrameMark();
 
+        if should_quit break;
+
         if cast(Time) to_float64_seconds(current_time_monotonic() - frame_time) <= QUICK_FRAME_DT {
             // It should be ok to sleep a bit after a quick frame to avoid pegging the core.
             sleep_milliseconds(2);
         }
     }
 
-    // report := make_leak_report();
-    // log_leak_report(report);
+    #if DEBUG_MEMORY_LEAKS {
+        log("========= LEAK REPORT =========\n");
+        report := make_leak_report();
+        log_leak_report(report);
+        log("========= END OF REPORT =======\n");
+    }
 }
 
 handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placement = .in_place) -> handled: bool {
     if action == {
-        case .quit;                                             should_quit = true;                                 return true;
+        case .quit;                                             defer_action_quit();                                return true;
+
+        case .open_another_editor_instance;                     open_another_editor_instance();                     return true;
 
         case .increase_font_size;                               increase_font_size();                               return true;
         case .decrease_font_size;                               decrease_font_size();                               return true;
         case .reset_font_size_to_default;                       reset_font_size_to_default();                       return true;
 
-        case .open_project;                                     #through;
-        case .switch_to_project;                                show_dialog(*open_project_dialog);                  return true;
+        case .open_project;                                     print("UNIMPLEMENTED\n");  /* !!!!!!!!!!!! */       return true;
+        case .switch_to_project;                                show_dialog(*switch_to_project_dialog);             return true;
         case .close_project;                                    close_project();                                    return true;
 
         case .choose_theme;                                     show_dialog(*theme_dialog);                         return true;
@@ -329,6 +385,11 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .go_to_line;                                       show_go_to_line_dialog();                           return true;
         case .create_new_file;                                  editors_create_new_file(placement);                 return true;
         case .create_new_file_on_the_side;                      editors_create_new_file(.on_the_side);              return true;
+
+        case .go_to_next_build_error;                           go_to_next_build_error(.in_place);                  return true;
+        case .go_to_next_build_error_on_the_side;               go_to_next_build_error(.on_the_side);               return true;
+        case .go_to_previous_build_error;                       go_to_previous_build_error(.in_place);              return true;
+        case .go_to_previous_build_error_on_the_side;           go_to_previous_build_error(.on_the_side);           return true;
 
         case .open_file_by_name;                                show_open_file_dialog(.search);                     return true;
         case .navigate_to_file;                                 show_open_file_dialog(.navigate);                   return true;
@@ -347,6 +408,7 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .toggle_build_panel;                               toggle_build_panel();                               return true;
 
         case .build_kill_running_command;                       build_kill_running_command();                       return true;
+        case .build_clear_output;                               build_clear_output();                               return true;
 
         // TODO: search_in_buffer
         case .search_in_project;
@@ -355,13 +417,12 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
     return false;
 }
 
-maybe_execute_a_build_command :: (event: Input.Event) -> handled: bool {
-    action := map_event_to_action(event, Action_Build);
+maybe_execute_a_build_command :: (action: Action_Build) -> handled: bool {
     if action == INVALID_KEYMAP_ACTION return false;
 
     command_id := cast(s64) action;
     assert(command_id <= config.build.commands.count, "A keymap was bound to a nonexistent build command %. Number of build commands: %. This is a bug", command_id, config.build.commands.count);
-    
+
     if config.settings.save_all_file_backed_buffers_on_build {
         for * buffer, buffer_id : open_buffers {
             if buffer.modified && buffer.has_file {
@@ -517,6 +578,17 @@ editor_toggle_fullscreen :: () {
     toggle_fullscreen(window, fullscreen, *fullscreen_state);  // platform-specific
 }
 
+open_another_editor_instance :: () {
+    new_window_process := Process.{};
+    #if OS == .WINDOWS {
+        kill_children := false;
+    } else {
+        // Not killing children is not yet implemented on non-Windows systems
+        kill_children := true;
+    }
+    create_process(*new_window_process, .. focus_executable_args, "", capture_and_return_output = false, arg_quoting = Process_Argument_Quoting.QUOTE_IF_NEEDED, kill_process_if_parent_exits = kill_children);
+}
+
 increase_font_size :: () {
     if (font_size + 1) <= MAX_FONT_SIZE {
         font_size += 1;
@@ -619,6 +691,8 @@ temp_dir:     string;
 projects_dir: string;
 themes_dir:   string;
 
+focus_executable_args: [] string;
+
 window: Window_Type;
 window_generic_title: string = ---;
 window_width  := 0;
@@ -630,17 +704,13 @@ dpi_scale := 1.0;
 fullscreen: bool;
 fullscreen_state: Saved_Window_Info;
 
-redraw_requested        := true;  // set to true to render the first frame
-should_quit             := false;
-force_quit              := false;
-should_reload_workspace := false;
-automatic_workspace_reload := false;
+redraw_requested            := true;  // set to true to render the first frame
+should_quit                 := false;
 
 frame_time: Apollo_Time;          // ever-increasing time since start in seconds
 frame_dt:   Time = MAX_FRAME_DT;  // time delta since the last frame
 MAX_FRAME_DT:   Time : xx (1.0 / 60);
 QUICK_FRAME_DT: Time : xx (1.0 / 300);  // sorry 300Hz monitor users
-// MAX_TIME_BEFORE_RESETTING: Time : xx (60 * 60 * 24 * 7);  // reset timer after a week to avoid losing timer precision
 
 EDIT_GROUP_TIMEOUT :: 0.3;  // for undo/redo
 
@@ -736,11 +806,18 @@ scrollbar_size:             float;
 
 dont_scroll_this_frame := false;  // because e.g. a mouse wheel event has been handled
 
+// This will be set to `true` in `refresh_config()` to signal that the
+// next window resize event should be handled even if the window doesn't actually
+// change size. This is needed when changing DPI/scaling options which require
+// a full repaint.
+dont_ignore_next_window_resize := false;
+
 Mods :: Input.Event.Modifier_Flags;
 
 Time :: #type,isa float64;
 
-project_dirs: [..] Project_Dir;
+project_dirs:  [..] Project_Dir;
+project_files: [..] string;  // individual files added to project
 
 active_global_widget: Active_Global_Widget = .editors;
 
@@ -751,10 +828,12 @@ Active_Global_Widget :: enum {
     delete_file_dialog;
     go_to_line_dialog;
     commands_dialog;
-    open_project_dialog;
+    switch_to_project_dialog;
     unsaved_buffers_dialog;
     confirm_overwrite_dialog;
+    kill_running_command_dialog;
     theme_dialog;
+    language_dialog;
 }
 
 Project_Dir :: struct {
@@ -791,12 +870,6 @@ cpu_info: Cpu_X86;
 
 focus_allocator: Allocator;
 
-// This will be set to `true` in `refresh_config()` to signal that the
-// next window resize event should be handled even if the window doesn't actually
-// change size. This is needed when changing DPI/scaling options which require
-// a full repaint.
-dont_ignore_next_window_resize := false;
-
 
 #load "layout.jai";
 #load "editors.jai";
@@ -814,10 +887,13 @@ dont_ignore_next_window_resize := false;
 #load "colors.jai";
 #load "keymap.jai";
 #load "session.jai";
+#load "projects.jai";
 #load "meow_hash.jai";
 #load "user_messages.jai";
+#load "deferred_actions.jai";
 
 #load "widgets/generic_choice_dialog.jai";
+#load "widgets/generic_confirm_dialog.jai";
 #load "widgets/text_input.jai";
 #load "widgets/open_file_dialog.jai";
 #load "widgets/delete_file_dialog.jai";
@@ -825,24 +901,37 @@ dont_ignore_next_window_resize := false;
 #load "widgets/finder.jai";
 #load "widgets/unsaved_buffers.jai";
 #load "widgets/commands.jai";
-#load "widgets/open_project.jai";
+#load "widgets/switch_to_project.jai";
 #load "widgets/confirm_overwrite.jai";
+#load "widgets/kill_running_command.jai";
 #load "widgets/theme_dialog.jai";
+#load "widgets/language_dialog.jai";
+#load "widgets/color_preview.jai";
+#load "widgets/color_picker.jai";
 
 #load "langs/common.jai";
 #load "langs/jai.jai";
 #load "langs/c.jai";
+#load "langs/cpp.jai";
+#load "langs/css.jai";
 #load "langs/csharp.jai";
 #load "langs/focus_config.jai";
 #load "langs/glsl.jai";
+#load "langs/hlsl.jai";
 #load "langs/golang.jai";
+#load "langs/js.jai";
+#load "langs/json.jai";
 #load "langs/lua.jai";
 #load "langs/odin.jai";
 #load "langs/python.jai";
 #load "langs/renpy.jai";
 #load "langs/xml.jai";
-#load "langs/worklog.jai";
+#load "langs/todo.jai";
 #load "langs/yang.jai";
+#load "langs/zig.jai";
+#load "langs/uxntal.jai";
+#load "langs/rust.jai";
+#load "langs/markdown.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
@@ -855,24 +944,8 @@ dont_ignore_next_window_resize := false;
     #assert false, "Unsupported OS";
 }
 
-/*
- * Idealy this would go under `#if OS == .LINUX`. However, that doesn't work at the moment,
- * compilation fails with the following error:
- *
- *   Error: Cannot designate program parameters for the module "Linux_Display" because an import for that module has already been seen, so it's too late.
- *
- * This seems to happen because imports placed inside of an `#if` are processed after top-level
- * imports, and `Linux_Display` is pulled-in by other modules (`Clipboard`, `Input`, `Simp`) that
- * the editor imports at the top level. Not sure if this is a compiler bug or if it's working as
- * intended, pretty hard to say considering evaluation order is not guaranteed in any way.
- *
- * `Linux_Display` is empty on platforms other than Linux, so importing it should be basically
- * free on Windows/MacOS.
- */
-_ :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
-
+using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG);
 #import "Atomics";
-#import "Basic"()(MEMORY_DEBUGGER = DEBUG);
 #import "Compiler";
 #import "File";
 #import "File_Utilities";
@@ -890,8 +963,10 @@ _ :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
 #import "Thread";
 #import "Unicode";
 #import "Window_Creation";
+#import "Hash_Table";
 
-re :: #import "uniform";
+re   :: #import "uniform";
+Hash :: #import "Hash";
 
 // NOTE to future self: remove `.NeverCapture` from `BASE_REGEX_FLAGS` if we ever want to have
 //                      find-and-replace with regex capture support
@@ -952,3 +1027,15 @@ Embedded_Font :: struct {
 }
 
 DEBUG_FILE_REFRESH :: false;  // TODO: remove when done debugging
+DEBUG_MEMORY_LEAKS :: false;
+
+
+#if OS == .LINUX {
+    /*
+     * EXTREME JANK - nuke once the Jai standard library no longer depends on libc
+     */
+    focus_memcpy :: (dst: *void, src: *void, size: s64) -> *void #foreign libc "memmove";
+    libc :: #system_library "libc";
+} else {
+    focus_memcpy :: memcpy;
+}

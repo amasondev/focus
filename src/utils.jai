@@ -5,14 +5,12 @@ array_insert_bytes_at :: (array: *[..] u8, offset: s64, bytes: [] u8) {
     new_size := array.count + bytes.count;
     array_reserve(array, new_size);
 
-    // NOTE: assuming memcpy works well with overlapping ranges!
-    // (tested on Windows with all backends)
     src := array.data + offset;
     dst := src + bytes.count;
-    memcpy(dst, src, array.count - offset);
+    focus_memcpy(dst, src, array.count - offset);
 
     // Insert the string
-    memcpy(array.data + offset, bytes.data, bytes.count);
+    focus_memcpy(array.data + offset, bytes.data, bytes.count);
 
     array.count = new_size;
 }
@@ -23,14 +21,14 @@ array_add_bytes :: (array: *[..] u8, bytes: [] u8) {
     new_size := array.count + bytes.count;
     array_reserve(array, new_size);
 
-    memcpy(array.data + array.count, bytes.data, bytes.count);
+    focus_memcpy(array.data + array.count, bytes.data, bytes.count);
 
     array.count = new_size;
 }
 
 array_delete_bytes :: (array: *[..] u8, offset: s64, count: s64) {
     assert(offset >= 0 && count >= 0 && offset + count <= array.count);
-    memcpy(array.data + offset, array.data + offset + count, array.count - offset - count);
+    focus_memcpy(array.data + offset, array.data + offset + count, array.count - offset - count);
     array.count -= count;
 }
 
@@ -44,16 +42,9 @@ to_bytes :: (src: string) -> [] u8 {
 // Intended for compile-time
 arrays_concat :: (array1: [] $T, array2: [] T) -> [] T {
     result: [..] T;
-    array_extend(*result, array1);
-    array_extend(*result, array2);
+    array_add(*result, ..array1);
+    array_add(*result, ..array2);
     return result;
-}
-
-maybe_free_and_clear :: (str: *string) {
-    if !str.data || str.count == 0 return;
-    free(<< str);
-    str.data  = null;
-    str.count = 0;
 }
 
 to_owned_array :: (array: *[..]$T, free_memory := false) -> []T {
@@ -66,47 +57,22 @@ to_owned_array :: (array: *[..]$T, free_memory := false) -> []T {
     return new_array;
 }
 
-array_extend :: (array: *[..] $T, slice: [] T) {
-    if slice.count <= 0 return;
+visual_col_to_byte_offset :: (str: string, target_col: s64, line_indent: s64) -> offset: s64, new_col: s64 {
+    s := str;
+    col := 0;
 
-    new_size := array.count + slice.count;
-    array_reserve(array, new_size);
-
-    memcpy(array.data + array.count, slice.data, slice.count * size_of(T));
-
-    array.count = new_size;
-}
-
-pos_to_offset :: (str: string, pos: s64) -> s64 {
-    assert(pos >= 0, "Negative char position\n");
-    result := -1;
-    char_index  := 0;
-    offset := 0;
-
-    while offset < str.count {
-        if pos == char_index {
-            result = offset;
-            break;
+    while s && col < target_col {
+        byte := s[0];
+        if byte != #char "\t" {
+            safe_advance(*s, 1 + trailingBytesForUTF8[byte]);
+            col += 1;
+        } else {
+            safe_advance(*s, 1);
+            col += TAB_SIZE - (col + line_indent) % TAB_SIZE;
         }
-        byte := str.data[offset];
-        offset += 1 + trailingBytesForUTF8[byte];
-        char_index += 1;
     }
-    if pos == char_index then result = offset;
-    assert(result >= 0, "Char position outside string\n");
 
-    return result;
-}
-
-// Slices the string using char indices, not byte indices
-slice_chars :: (str: string, pos1: s32, pos2: s32) -> string {
-    if pos2 <= pos1 || !str return "";
-
-    offset1 := pos_to_offset(str, pos1);
-    remaining_str := slice(str, offset1, str.count - offset1);
-    offset2 := offset1 + pos_to_offset(remaining_str, pos2 - pos1);
-
-    return slice(str, offset1, offset2 - offset1);
+    return (s.data - str.data), col;
 }
 
 advance_to_next_line :: inline (s: *string) {
@@ -218,17 +184,22 @@ fuzzy_match :: (str: string, filter: Fuzzy_Filter, only_exact := false) -> score
     return xx score, highlights;
 }
 
-construct_fuzzy_filter :: (filter_str: string, treat_slashes_as_spaces := false) -> Fuzzy_Filter {
+construct_fuzzy_filter :: (filter_str: string, multi_chunk_search := false) -> Fuzzy_Filter {
     str := copy_temporary_string(trim(filter_str));
     if !str return .{};
 
     chunks: [..] Fuzzy_Filter.Chunk;
     chunks.allocator = temp;
 
-    // Split into strings separated by spaces or slashes
-    space := cast(u8) #char " ";
-    if treat_slashes_as_spaces then replace_chars(str, "\\/", space);
-    strings := split(str, space,, allocator = temp);
+    // Maybe split into strings separated by spaces or slashes (useful for the open file dialog)
+    strings: [] string;
+    if multi_chunk_search {
+        space := cast(u8) #char " ";
+        replace_chars(str, "\\/", space);
+        strings = split(str, space,, allocator = temp);
+    } else {
+        strings = .[str];  // treat the whole search string as one (useful for commands etc)
+    }
 
     for s : strings {
         if !s continue;
@@ -289,6 +260,15 @@ find_index_from_left_nocase :: (s: string, substring: string, start_index := 0) 
     }
 
     return -1;
+}
+
+contains_uppercase_ascii :: (s: string) -> bool {
+    // TODO: support unicode too when we support case insensitive search for unicode strings
+    for 0 .. s.count-1 {
+        char := s[it];  // we don't care if it's part of a larger unicode char
+        if (char >= #char "A" && char <= #char "Z") return true;
+    }
+    return false;
 }
 
 match_whole_word :: (s: string, offset: int, count: int) -> bool {
@@ -369,48 +349,6 @@ get_balancing_char :: (ch: u32, include_closing := false) -> u32 {
     return 0;
 }
 
-find_balancing_char :: (s: string, ch: u32, start_index: s64) -> s64 {
-    if !s return -1;
-
-    // determine direction. 0 is a symmetric character like a quotation mark, which this does not currently handle.
-    direction := 0;
-    if ch == {
-        case #char "{"; #through;
-        case #char "("; #through;
-        case #char "[";
-            direction = 1;
-        case #char "}"; #through;
-        case #char ")"; #through;
-        case #char "]";
-            direction = -1;
-    }
-    balancing_char : u32 = get_balancing_char(ch, true);
-    if direction < 0 {
-        balance := 0;
-        for < i: start_index..0 {
-            t : u32 = s[i];
-            if t == ch balance += 1;
-            else if t == balancing_char {
-                balance -= 1;
-                if balance == 0 return i;
-            }
-        }
-    }
-    else if direction > 0 {
-        balance := 0;
-        for i: start_index..s.count - 1{
-            t : u32 = s[i];
-            if t == ch balance += 1;
-            else if t == balancing_char {
-                balance -= 1;
-                if balance == 0 return i;
-            }
-        }
-    }
-
-    return -1;
-}
-
 get_char_type :: (ch: u32) -> Char_Type {
     if is_word_char(ch) {
         return .word;
@@ -444,6 +382,19 @@ count_whitespace :: (bytes: [] u8, start_offset: s64, max_offset: s64, spaces :=
         if !is_any(it, spaces) return cast(s32) it_index;
     }
     return cast(s32) (max_offset - start_offset);
+}
+
+count_bytes_knowing_number_of_chars :: (bytes: [] u8, start_offset: s64, max_offset: s64, num_chars: s32) -> count: s32 {
+    count: s32 = 0;
+    s := cast(string) array_view(bytes, start_offset, max_offset - start_offset);
+    while s && num_chars {
+        byte := s[0];
+        num_bytes := clamp(1 + cast(s32) trailingBytesForUTF8[byte], 1, cast(s32) s.count);
+        advance(*s, num_bytes);
+        count += num_bytes;
+        num_chars -= 1;
+    }
+    return count;
 }
 
 get_visual_indent_in_spaces :: (line: string, spaces := " \t") -> indent: int {
@@ -541,7 +492,6 @@ split :: (s: string, separator: $T, max_splits: int) -> [] string {
     #assert (T == u8) || (T == string);
 
     results: [..] string;
-    results.allocator = context.allocator;
 
     if max_splits < 1 return results;
 
@@ -568,6 +518,14 @@ split :: (s: string, separator: $T, max_splits: int) -> [] string {
     return results;
 }
 
+table_find_or_default :: (table: *Table, key: table.Key_Type) -> table.Value_Type {
+    pointer := inline table_find_pointer(table, key);
+    if pointer  return << pointer;
+
+    default: table.Value_Type;
+    return default;
+}
+
 Tween_Animation :: struct(T: Type) {
     start, target: T;
     started_at: Apollo_Time;
@@ -591,4 +549,103 @@ Fuzzy_Filter :: struct {
         str: string;
         chars: [] string;
     }
+}
+
+rgb_from_hsl :: (hsl: Vector3) -> Vector3 {
+    h := hsl.x;
+    s := hsl.y;
+    l := hsl.z;
+    r, g, b: float;
+
+    if s == 0 {
+        r, g, b = l, l, l; // achromatic
+    }
+    else {
+        rgb_from_hue :: (p: float, q: float, t: float) -> float {
+            if t < 0  t += 1;
+            if t > 1  t -= 1;
+            if t < 1.0/6.0  return p + (q - p) * 6 * t;
+            if t < 1.0/2.0  return q;
+            if t < 2.0/3.0  return p + (q - p) * (2.0/3.0 - t) * 6;
+            return p;
+        }
+
+        q := ifx l < 0.5 then l * (1 + s) else l + s - l * s;
+        p := 2 * l - q;
+        r = rgb_from_hue(p, q, h + 1.0/3.0);
+        g = rgb_from_hue(p, q, h);
+        b = rgb_from_hue(p, q, h - 1.0/3.0);
+    }
+
+    return .{r, g, b};
+}
+
+hsl_from_rgb :: (color: Vector3) -> hsl: Vector3 {
+    r := color.x;
+    g := color.y;
+    b := color.z;
+    h, s, l: float;
+
+    _min := min(min(r, g), b);
+    _max := max(max(r, g), b);
+
+    c := _max - _min;
+    l = (_min + _max) / 2;
+
+    if c < 0.00001 || _max <= 0.0 return .{h, s, l};
+
+    s = ifx l >= 0.5
+        then c / (2 - _max - _min)
+        else c / (_max + _min);
+
+    if      _max == r  h = (g - b) / c + (ifx g < b then 6 else 0);
+    else if _max == g  h = (b - r) / c + 2;
+    else               h = (r - g) / c + 4;
+
+    h /= 6.0;
+    if h < 0.0  h += 1.0;
+
+    return .{h, s, l};
+}
+
+color_to_hex :: (using color: Vector4, exclude_hash := false) -> string /* temp */ {
+    r_u8 := cast(u8)(255 * x);
+    g_u8 := cast(u8)(255 * y);
+    b_u8 := cast(u8)(255 * z);
+    a_u8 := cast(u8)(255 * w);
+
+    h :: #bake_arguments formatInt(base=16, minimum_digits=2);
+    format := "#%1%2%3%4";
+    if exclude_hash advance(*format, 1);
+
+    return tprint(format, h(r_u8), h(g_u8), h(b_u8), h(a_u8));
+}
+
+hex_to_color_vec4 :: (src_hex: string) -> Vector4, success: bool {
+    hex := src_hex;
+    if hex.count == 6 then hex = tprint("%FF", hex);
+    if hex.count != 8 return Vector4.{}, false;
+
+    r := slice(hex, 0, 2);
+    g := slice(hex, 2, 2);
+    b := slice(hex, 4, 2);
+    a := slice(hex, 6, 2);
+
+    to_float :: (byte_str: string) -> float {
+        hex_digit_to_int :: (char: u8) -> int {
+            char = to_upper(char);
+            if #char "0" <= char && char <= #char "9" return char - #char "0";
+            if #char "A" <= char && char <= #char "F" return 10 + char - #char "A";
+            return -1;
+        }
+
+        d1, d0 := cast(float)hex_digit_to_int(byte_str[0]), cast(float) hex_digit_to_int(byte_str[1]);
+        if d1 < 0 || d0 < 0 return -1;
+
+        return (16 * d1 + d0) / 255;
+    }
+
+    c := Vector4.{ to_float(r), to_float(g), to_float(b), to_float(a) };
+
+    return c, c.x >= 0 && c.y >= 0 && c.z >= 0 && c.w >= 0;
 }

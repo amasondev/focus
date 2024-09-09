@@ -1,7 +1,7 @@
 //
 // This file was auto-generated using the following command:
 //
-// jai modules/Objective_C/generate.jai
+// jai modules/Objective_C/generate.jai - -x64
 //
 
 
@@ -89,4 +89,4 @@ marg_list :: *void;
 
 #scope_file
 
-libobjc :: #system_library "libobjc";
+libobjc :: #library,system "libobjc";

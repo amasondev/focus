@@ -1,18 +1,12 @@
 Color :: enum u8 {
-    CODE_DEFAULT;
-    CODE_COMMENT;
-    CODE_TYPE;
-    CODE_FUNCTION;
-    CODE_PUNCTUATION;
-    CODE_OPERATION;
-    CODE_STRING;
-    CODE_VALUE;
-    CODE_HIGHLIGHT;
-    CODE_ERROR;
-    CODE_WARNING;
-    CODE_KEYWORD;
+    CODE_DEFAULT :: 0;  // must be first
 
-    BACKGROUND_0;
+    // ...
+    // The space between CODE_DEFAULT and BACKGROUND_0 is reserved for the code colors,
+    // which are defined by the Token_Type enum.
+    // ...
+
+    BACKGROUND_0 :: #run enum_highest_value(Token_Type) + 1;
     BACKGROUND_1;
     BACKGROUND_2;
     BACKGROUND_3;
@@ -54,6 +48,7 @@ Color :: enum u8 {
     REGION_SUCCESS;
     REGION_WARNING;
     REGION_ERROR;
+    REGION_HEREDOC;
 
     BUILD_PANEL_BACKGROUND;
     BUILD_PANEL_SCROLLBAR;
@@ -65,10 +60,10 @@ Color :: enum u8 {
 };
 
 // Will be populated when parsing config
-COLOR_MAP: [NUM_COLORS] Vector4;
+COLOR_MAP: [COLOR_MAP_SIZE] Vector4;
 
 // Will contain the color map of the default config (useful when merging configs)
-#no_reset DEFAULT_COLOR_MAP: [NUM_COLORS] Vector4;
+#no_reset DEFAULT_COLOR_MAP: [COLOR_MAP_SIZE] Vector4;
 
 map_color_to_vec4 :: inline (color: Color) -> Vector4 {
     return COLOR_MAP[cast(s64) color];
@@ -79,6 +74,4 @@ color_as_3_floats :: (color: Color) -> [3] float {
     return .[c.x, c.y, c.z];
 }
 
-#scope_file
-
-NUM_COLORS :: #run enum_highest_value(Color) + 1;
+COLOR_MAP_SIZE :: #run enum_highest_value(Color) + 1;

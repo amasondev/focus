@@ -14,19 +14,6 @@ XCB_Display :: struct {
 
     cursors: Table(string, xcb_cursor_t);
 
-    kb_context: *xkb_context;
-    kb_keymap : *xkb_keymap;
-    kb_state  : *xkb_state;
-    kb_compose_table: *xkb_compose_table;
-    kb_compose_state: *xkb_compose_state;
-    mod_idx_shift     : u32;
-    mod_idx_ctrl      : u32;
-    mod_idx_alt       : u32;
-    mod_idx_caps_lock : u32;
-    mod_idx_super     : u32;
-    mod_idx_alt_gr    : u32;
-    core_kb_id        : s32;
-
     cliboard_blocking_tranfser_ongoing: bool;
     clipboard_window: xcb_window_t;
     clipboard_incoming_data: string;        // from the outside to us
@@ -52,6 +39,8 @@ XCB_Display :: struct {
         _NET_WM_STATE_MAXIMIZED_VERT: xcb_atom_t;
         _NET_WM_STATE_MAXIMIZED_HORZ: xcb_atom_t;
         _NET_WM_STATE_FULLSCREEN: xcb_atom_t;
+        _NET_WM_NAME: xcb_atom_t;
+        _NET_WM_ICON_NAME: xcb_atom_t;
 
         UTF8_STRING: xcb_atom_t;                     @create
     }
@@ -218,7 +207,7 @@ xcb_init_display :: (display: *Display) -> bool {
     init(*xd.devices);
     init(*xd.cursors);
 
-    if !reinit_xkb_state(*xd) return false;
+    if !ld_xkb_state_init(*xd, xd.handle) return false;
     if !load_cursors(*xd) return false;
 
     create_gl_context(cast(*Display) *xd);
@@ -273,7 +262,15 @@ xcb_create_window :: (display: *Display, window: *Window, width: int, height: in
         xx xcb_atom_enum_t.ATOM,
         32, 1, *xd.global_atoms.WM_DELETE_WINDOW);
 
-    set_utf8_property(*xw, xx xcb_atom_enum_t.WM_NAME, window_name);
+    class_sz := tprint("%\0%\0", ifx window_name then window_name else "jai-application", display.base.app_id);
+    xcb.change_property(
+        xd.handle,
+        .REPLACE,
+        xw.handle,
+        xx xcb_atom_enum_t.WM_CLASS,
+        xx xcb_atom_enum_t.STRING,
+        8, xx class_sz.count, class_sz.data);
+    xcb_set_window_title(xx *xw, window_name);
 
     if xd.xi_initialized {
         mask: struct {
@@ -401,11 +398,11 @@ xcb_update_window_events :: (display: *Display) {
                 case XCB_XKB_NEW_KEYBOARD_NOTIFY; #through;
                 case XCB_XKB_MAP_NOTIFY;
                     log("Reloading keyboard map");
-                    reinit_xkb_state(xd);
+                    ld_xkb_state_init(xd, xd.handle);
 
                 case XCB_XKB_STATE_NOTIFY;
                     neev := cast(*xcb_xkb_state_notify_event_t) event;
-                    xkb_state_update_mask(xd.kb_state,
+                    ld_xkb_state_set_mods(xd,
                         neev.baseMods, neev.latchedMods, neev.lockedMods,
                         xx neev.baseGroup, xx neev.latchedGroup, xx neev.lockedGroup);
             }
@@ -448,8 +445,8 @@ xcb_update_window_events :: (display: *Display) {
             case XCB_KEY_PRESS; #through;
             case XCB_KEY_RELEASE;
                 kpev := cast(*xcb_key_press_event_t) event;
-                event_type := ifx response_type == XCB_KEY_PRESS then Key_Event_Type.Press else .Release;
-                handle_key_event(xd, kpev.detail, event_type);
+                event_type := ifx response_type == XCB_KEY_PRESS then LD_XKB_Key_Event_Type.Press else .Release;
+                ld_xkb_handle_key_event(xd, kpev.detail, event_type, false);
 
             case XCB_BUTTON_PRESS; #through;
             case XCB_BUTTON_RELEASE;
@@ -731,6 +728,9 @@ xcb_enable_dnd :: (window: *Window, typelist: []string) {
 xcb_set_window_title :: (window: *Window, title: string) {
     xcb_check_usage(null, window);
     set_utf8_property(window, xx xcb_atom_enum_t.WM_NAME, title);
+    set_utf8_property(window, xx xcb_atom_enum_t.WM_ICON_NAME, title);
+    set_utf8_property(window, window.xcb.display.global_atoms._NET_WM_NAME, title);
+    set_utf8_property(window, window.xcb.display.global_atoms._NET_WM_ICON_NAME, title);
 }
 
 xcb_maximize_window :: (window: *Window) {
@@ -825,49 +825,6 @@ load_procs :: (procs: *$T, libnames: []string, prefix: $string, loaded: *bool) -
     return false;
 }
 
-reinit_xkb_state :: (xd: *XCB_Display) -> bool {
-    core_kb_id := xkb_x11_get_core_keyboard_device_id(xd.handle);
-    if core_kb_id < 0 {
-        log_error("Failed to get device ID for core keyboard");
-        return false;
-    }
-
-    kb_context := xkb_context_new(.XKB_CONTEXT_NO_FLAGS);
-    kb_keymap  := xkb_x11_keymap_new_from_device(kb_context, xd.handle, core_kb_id, .XKB_KEYMAP_COMPILE_NO_FLAGS);
-    kb_state   := xkb_x11_state_new_from_device(kb_keymap, xd.handle, core_kb_id);
-
-    mod_idx_shift     := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_SHIFT.data);
-    mod_idx_ctrl      := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_CTRL.data);
-    mod_idx_alt       := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_ALT.data);
-    mod_idx_caps_lock := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_CAPS.data);
-    mod_idx_super     := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_LOGO.data);
-    mod_idx_alt_gr    := xkb_keymap_mod_get_index(kb_keymap, XKB_MOD_NAME_ALT_GR.data);
-
-    kb_compose_table := xkb_compose_table_new_from_locale(kb_context, setlocale(LC_ALL, null), .XKB_COMPOSE_COMPILE_NO_FLAGS);
-    kb_compose_state := xkb_compose_state_new(kb_compose_table, .XKB_COMPOSE_STATE_NO_FLAGS);
-
-    xkb_compose_state_unref(xd.kb_compose_state);
-    xkb_compose_table_unref(xd.kb_compose_table);
-    xkb_state_unref(xd.kb_state);
-    xkb_keymap_unref(xd.kb_keymap);
-    xkb_context_unref(xd.kb_context);
-
-    xd.kb_context = kb_context;
-    xd.kb_keymap = kb_keymap;
-    xd.kb_state = kb_state;
-    xd.mod_idx_shift = mod_idx_shift;
-    xd.mod_idx_ctrl = mod_idx_ctrl;
-    xd.mod_idx_alt = mod_idx_alt;
-    xd.mod_idx_caps_lock = mod_idx_caps_lock;
-    xd.mod_idx_super = mod_idx_super;
-    xd.mod_idx_alt_gr = mod_idx_alt_gr;
-    xd.kb_compose_table = kb_compose_table;
-    xd.kb_compose_state = kb_compose_state;
-    xd.core_kb_id = core_kb_id;
-
-    return true;
-}
-
 handle_xinput_event :: (xd: *XCB_Display, geev: *xcb_ge_generic_event_t) {
     if geev.event_type == {
         case XCB_INPUT_DEVICE_CHANGED;
@@ -881,8 +838,9 @@ handle_xinput_event :: (xd: *XCB_Display, geev: *xcb_ge_generic_event_t) {
         case XCB_INPUT_KEY_PRESS; #through;
         case XCB_INPUT_KEY_RELEASE;
             kpev := cast(*xcb_input_key_press_event_t) geev;
-            event_type := ifx geev.event_type == XCB_INPUT_KEY_PRESS then Key_Event_Type.Press else .Release
-            handle_key_event(xd, kpev.detail, event_type);
+            event_type := ifx geev.event_type == XCB_INPUT_KEY_PRESS then LD_XKB_Key_Event_Type.Press else .Release;
+            repeat := (kpev.flags & cast(u32) xcb_input_key_event_flags_t.XCB_INPUT_KEY_EVENT_FLAGS_KEY_REPEAT) != 0;
+            ld_xkb_handle_key_event(xd, kpev.detail, event_type, repeat);
 
         case XCB_INPUT_BUTTON_PRESS; #through;
         case XCB_INPUT_BUTTON_RELEASE;
@@ -929,58 +887,7 @@ handle_xinput_event :: (xd: *XCB_Display, geev: *xcb_ge_generic_event_t) {
     }
 }
 
-Key_Event_Type :: enum {
-    Press;
-    Release;
-}
-Button_Event_Type :: Key_Event_Type;
-
-handle_key_event :: (xd: *XCB_Display, keycode: u32, event_type: Key_Event_Type) {
-    utf32: u32;
-    is_printable: bool;
-    keysym := xkb_state_key_get_one_sym(xd.kb_state, keycode);
-
-    ji_event: Input.Event;
-    ji_event.type = .KEYBOARD;
-    ji_event.shift_pressed    = xkb_state_mod_index_is_active(xd.kb_state, xd.mod_idx_shift, .XKB_STATE_MODS_EFFECTIVE) == 1;
-    ji_event.ctrl_pressed     = xkb_state_mod_index_is_active(xd.kb_state, xd.mod_idx_ctrl,  .XKB_STATE_MODS_EFFECTIVE) == 1;
-    ji_event.alt_pressed      = xkb_state_mod_index_is_active(xd.kb_state, xd.mod_idx_alt,   .XKB_STATE_MODS_EFFECTIVE) == 1;
-    ji_event.cmd_meta_pressed = xkb_state_mod_index_is_active(xd.kb_state, xd.mod_idx_super, .XKB_STATE_MODS_EFFECTIVE) == 1;
-
-    if event_type == .Press {
-        xkb_compose_state_feed(xd.kb_compose_state, keysym);
-
-        status := xkb_compose_state_get_status(xd.kb_compose_state);
-        if status == .XKB_COMPOSE_COMPOSED || status == .XKB_COMPOSE_CANCELLED {
-            keysym = xkb_compose_state_get_one_sym(xd.kb_compose_state);
-            xkb_compose_state_reset(xd.kb_compose_state);
-        }
-
-        utf32 = xkb_keysym_to_utf32(keysym);
-        is_printable = ((utf32 >= 32) && (utf32 != 127));
-
-        ji_event.key_pressed = 1;
-        ji_event.key_code = x11_translate_key_code(keysym);
-        ji_event.text_input_count = xx is_printable;
-        xd.base.input_button_states[ji_event.key_code] = (Input.Key_Current_State.START | Input.Key_Current_State.DOWN);
-    } else {
-        ji_event.key_pressed = 0;
-        ji_event.key_code = x11_translate_key_code(keysym);
-        xd.base.input_button_states[ji_event.key_code] = Input.Key_Current_State.END;
-    }
-
-    array_add(*xd.base.events_this_frame, ji_event);
-
-    if ji_event.key_pressed && is_printable {
-        text_event: Input.Event;
-        text_event.type = .TEXT_INPUT;
-        text_event.key_pressed = 1;
-        text_event.key_code = ji_event.key_code;
-        text_event.utf32 = utf32;
-        array_add(*xd.base.events_this_frame, text_event);
-    }
-}
-
+Button_Event_Type :: LD_XKB_Key_Event_Type;
 Button_Event_Source :: enum {
     Core;
     XInput;
@@ -1176,14 +1083,13 @@ get_device_info :: (xd: *XCB_Display, device_id: xcb_input_device_id_t) -> *XCB_
 
 set_utf8_property :: (xw: *XCB_Window, property: xcb_atom_t, value: string) {
     xd := xw.display;
-    sz_val := tprint("%\0", value);
     xcb.change_property(
         xd.handle,
         .REPLACE,
         xw.handle,
         property,
         xd.global_atoms.UTF8_STRING,
-        8, xx sz_val.count, sz_val.data);
+        8, xx value.count, value.data);
 }
 
 WM_State_Op :: enum u32 {

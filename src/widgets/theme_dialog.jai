@@ -107,7 +107,7 @@ preview_selected_theme :: () {
         return;
     }
 
-    migrated, new_file_data := maybe_migrate_config(theme.path, file_data, assume_section = "style");
+    migrated, new_file_data := maybe_migrate_config(theme.path, file_data);
     if migrated {
         success := write_entire_file(theme.path, new_file_data);
         if !success then add_user_error("We migrated theme file '%' to version [%],\nbut could't save the file. Is it writable?", theme.path, CURRENT_CONFIG_VERSION);
@@ -128,9 +128,10 @@ preview_selected_theme :: () {
     apply_style(result.config);
 }
 
-// NOTE: assuming we're allocating from a pool
 theme_dialog_refresh_entries :: (filter: Fuzzy_Filter) {
     using theme_dialog;
+
+    assert(context.allocator.proc == flat_pool_allocator_proc, "Non-pool allocator is used in theme dialog. This is a bug.");
 
     themes: [..] Theme;
 

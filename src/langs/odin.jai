@@ -1,5 +1,5 @@
-highlight_odin_syntax :: (using buffer: *Buffer) {
-    tokenizer := get_tokenizer(buffer);
+tokenize_odin :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+    tokenizer := get_odin_tokenizer(buffer, start_offset, count);
     inside_attribute := false;
 
     while true {
@@ -77,10 +77,10 @@ highlight_odin_syntax :: (using buffer: *Buffer) {
         }
 
         if should_highlight_last_token_as_proc(tokenizer, token) {
-            memset(colors.data + tokenizer.last_tokens[0].start, xx Color.CODE_FUNCTION, tokenizer.last_tokens[0].len);
+            memset(tokens.data + tokenizer.last_tokens[0].start, xx Token_Type.function, tokenizer.last_tokens[0].len);
         }
         if should_highlight_second_last_token_as_proc(tokenizer, token) {
-            memset(colors.data + tokenizer.last_tokens[1].start, xx Color.CODE_FUNCTION, tokenizer.last_tokens[1].len);
+            memset(tokens.data + tokenizer.last_tokens[1].start, xx Token_Type.function, tokenizer.last_tokens[1].len);
         }
 
         // Remember last 3 tokens
@@ -88,16 +88,17 @@ highlight_odin_syntax :: (using buffer: *Buffer) {
         tokenizer.last_tokens[1] = tokenizer.last_tokens[0];
         tokenizer.last_tokens[0] = token;
 
-        color := COLOR_MAP[token.type];
-        memset(colors.data + token.start, xx color, token.len);
+        memset(tokens.data + token.start, xx token.type, token.len);
     }
+
+    return .[];
 }
 
-tokenize_odin_for_indentation :: (using buffer: Buffer) -> [] Indentation_Token /* temp */ {
+tokenize_odin_for_indentation :: (buffer: Buffer) -> [] Indentation_Token /* temp */ {
     tokens: [..] Indentation_Token;
     tokens.allocator = temp;
 
-    tokenizer := get_tokenizer(buffer);
+    tokenizer := get_odin_tokenizer(buffer);
 
     while true {
         src := get_next_token(*tokenizer);
@@ -140,12 +141,19 @@ tokenize_odin_for_indentation :: (using buffer: Buffer) -> [] Indentation_Token 
 #scope_file
 
 // A separate tokenizer for the same reasons as with Jai
-get_tokenizer :: (using buffer: Buffer) -> Odin_Tokenizer {
+get_odin_tokenizer :: (using buffer: Buffer, start_offset := -1, count := -1) -> Odin_Tokenizer {
     tokenizer: Odin_Tokenizer;
 
     tokenizer.buf   = cast(string) bytes;
     tokenizer.max_t = bytes.data + bytes.count;
     tokenizer.t     = bytes.data;
+
+    if start_offset >= 0 {
+        start_offset = clamp(start_offset, 0, bytes.count - 1);
+        count        = clamp(count,        0, bytes.count - 1);
+        tokenizer.t += start_offset;
+        tokenizer.max_t = tokenizer.t + count;
+    }
 
     return tokenizer;
 }
@@ -468,6 +476,16 @@ parse_period :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
                     token.operation = .double_period_less_than;
                     t += 1;
             }
+
+        case;
+            // Maybe it's an enum variant
+            if last_tokens[0].type != .identifier && tokenizer.had_white_space_to_skip {
+                next_token := peek_next_token(tokenizer);
+                if next_token.type == .identifier {
+                    token.type = .enum_variant;
+                    t = buf.data + next_token.start + next_token.len;  // fast-forward
+                }
+            }
     }
 }
 
@@ -615,7 +633,7 @@ parse_slash_comment_or_filetag :: (using tokenizer: *Odin_Tokenizer, token: *Tok
             t += 1;
 
             if t.* == #char "+" {
-                token.type = .file_tag;
+                token.type = .string_literal;  // file tag (not worth a separate token type)
                 t += 1;
             }
 
@@ -692,11 +710,12 @@ Odin_Tokenizer :: struct {
     t:       *u8;  // cursor
 
     last_tokens: [3] Token;  // to retroactively highlight procedures
+    had_white_space_to_skip := false;
 }
 
 Token :: struct {
     start, len: s32;
-    type: Type;
+    type: Token_Type;
 
     // Additional info to distinguish between keywords/punctuation
     union {
@@ -706,50 +725,10 @@ Token :: struct {
         attribute:   Attribute;
         directive:   Directive;
     }
-
-    Type :: enum u16 {
-        eof;
-
-        identifier;
-        string_literal;
-        raw_string;
-        number;
-        comment;
-        multiline_comment;
-        file_tag;
-        operation;
-        punctuation;
-        keyword;
-        type_keyword;
-        value_keyword;
-        attribute;
-        directive;
-        invalid;
-    }
 }
 
-// Must match the order of the types in the enum
-COLOR_MAP :: Color.[
-    .CODE_COMMENT,       // eof - obviously not used
-    .CODE_DEFAULT,       // identifier
-    .CODE_STRING,        // string_literal
-    .CODE_STRING,        // raw_string
-    .CODE_VALUE,         // number
-    .CODE_COMMENT,       // comment
-    .CODE_COMMENT,       // multiline_comment
-    .CODE_STRING,        // file_tag
-    .CODE_OPERATION,     // operation
-    .CODE_PUNCTUATION,   // punctuation
-    .CODE_KEYWORD,       // keyword
-    .CODE_TYPE,          // type_keyword
-    .CODE_VALUE,         // value_keyword
-    .CODE_KEYWORD,       // attribute
-    .CODE_KEYWORD,       // directive
-    .CODE_ERROR,         // invalid
-];
-
 PUNCTUATION :: string.[
-    "attribute", "caret", "comma", "dollar", "period", "question", "semicolon", "file_tag",
+    "attribute", "caret", "comma", "dollar", "period", "question", "semicolon",
 
     "l_paren", "r_paren",
     "l_brace", "r_brace",
@@ -843,17 +822,19 @@ VALUE_KEYWORDS :: string.[
 
 // https://odin-lang.org/docs/overview/#attributes
 ATTRIBUTES :: string.[
-    "private", "builtin",
-    "require", "require_results",
-    "link_name", "link_prefix", "link_section", "linkage", "export", "extra_linker_flags",
-    "default_calling_convention",
-    "deferred_in", "deferred_out", "deferred_in_out", "deferred_none",
-    "deprecated", "warning", "disabled",
-    "init", "cold",
+    "private", "builtin", "test",
+    "require_results",
+    "export", "require", "entry_point_only",
+    "link_name", "link_prefix", "link_suffix", "link_section", "linkage",
+    "extra_linker_flags", "default_calling_convention", "priority_index",
+    "deferred_none", "deferred_in", "deferred_out", "deferred_in_out", "deferred_in_by_ptr", "deferred_out_by_ptr", "deferred_in_out_by_ptr",
+    "deprecated", "warning", "disabled", "cold",
+    "init", "fini",
     "optimization_mode",
-    "static", "thread_local",
+    "static", "thread_local", "rodata",
     "objc_name", "objc_class", "objc_type", "objc_is_class_method",
-    "require_target_feature", "enable_target_feature",
+    "enable_target_feature", "require_target_feature",
+    "instrumentation_enter", "instrumentation_exit", "no_instrumentation",
 ];
 
 // https://odin-lang.org/docs/overview/#directives
@@ -861,17 +842,17 @@ DIRECTIVES :: string.[
     "packed", "sparse", "raw_union", "align",
     "shared_nil", "no_nil",
     "type", "subtype",
-    "partial", "unroll",
-    "no_alias", "any_int", "caller_location", "c_vararg", "by_ptr",
+    "partial", "unroll", "reverse",
+    "no_alias", "any_int", "c_vararg", "by_ptr", "const",
     "optional_ok", "optional_allocator_error",
     "bounds_check", "no_bounds_check",
     "force_inline", "no_force_inline",
     "assert", "panic",
-    "config", "defined",
-    "file", "line", "procedure", "location",
-    "load", "load_or", "load_hash",
-    "soa", "relative",
-    "reverse",
+    "config", "defined", "exists",
+    "location", "caller_location",
+    "file", "line", "procedure", "directory", "hash",
+    "load", "load_or", "load_directory", "load_hash",
+    "soa", "relative", "simd",
 ];
 
 #insert -> string {
@@ -896,7 +877,7 @@ DIRECTIVES :: string.[
 }
 
 Keyword_Token :: struct {
-    type: Token.Type;
+    type: Token_Type;
     keyword: Keyword;
 }
 
@@ -907,9 +888,9 @@ KEYWORD_MAP :: #run -> Table(string, Keyword_Token) {
 
     #insert -> string {
         b: String_Builder;
-        for KEYWORDS        append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .keyword,       keyword = .kw_%1 });\n", it));
-        for TYPE_KEYWORDS   append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .type_keyword,  keyword = .kw_%1 });\n", it));
-        for VALUE_KEYWORDS  append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .value_keyword, keyword = .kw_%1 });\n", it));
+        for KEYWORDS        append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .keyword, keyword = .kw_%1 });\n", it));
+        for TYPE_KEYWORDS   append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .type,    keyword = .kw_%1 });\n", it));
+        for VALUE_KEYWORDS  append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .value,   keyword = .kw_%1 });\n", it));
         return builder_to_string(*b);
     }
 
@@ -967,11 +948,18 @@ MAX_DIRECTIVE_LENGTH :: #run -> s32 {
 }
 
 eat_white_space :: (using tokenizer: *Odin_Tokenizer) {
+    old_t := t;
     while t < max_t {
         if t.* == #char "\n"    then break;  // Make newlines a token
         if !is_white_space(t.*) then break;
         t += 1;
     }
+    had_white_space_to_skip = t != old_t;
 }
 
-#import "Hash_Table";
+peek_next_token :: (using tokenizer: Odin_Tokenizer, skip_white_space := true) -> Token {
+    tokenizer_copy := tokenizer;
+    if skip_white_space then eat_white_space(*tokenizer_copy);
+    token := get_next_token(*tokenizer_copy);
+    return token;
+}

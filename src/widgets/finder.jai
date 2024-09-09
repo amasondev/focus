@@ -15,6 +15,8 @@ init_finder :: () {
 
 deinit_finder :: () {
     if finder.initted shutdown(*thread_group);
+    reset_results();
+    text_input_fully_clear(*finder.input);
     finder.initted = false;
 }
 
@@ -67,6 +69,8 @@ finder_open :: () {
     using finder;
     input.cursor.sel = 0;
     input.cursor.pos = xx input.text.count;
+
+    case_sensitive_toggled_manually = false;
 
     if need_to_refresh_results {
         need_to_refresh_results = false;
@@ -126,7 +130,7 @@ finder_update :: () {
             array_resize(*results, total_results, initialize = false);
             i := 0;
             for request.completed_tasks {
-                memcpy(results.data + i, it.results.data, it.num_results * size_of(Search_Result));
+                focus_memcpy(results.data + i, it.results.data, it.num_results * size_of(Search_Result));
                 i += it.num_results;
             }
 
@@ -136,6 +140,7 @@ finder_update :: () {
 
             quick_sort(results, compare_search_results);
 
+            if needle then free(needle);
             needle = copy_string(request.needle);
 
             // Clean up task data
@@ -193,6 +198,8 @@ finder_toggle_case_sensitive :: () {
     using finder;
 
     case_sensitive = !case_sensitive;
+    case_sensitive_toggled_manually = true;
+
     start_new_search(force = true);
 }
 
@@ -230,7 +237,13 @@ start_new_search :: (force := false) {
         reset_results();
         return;
     }
-    if request.needle == cast(string) input.text && !force return;  // needle hasn't changed, no need to repeat
+    new_needle := cast(string) input.text;
+
+    if request.needle == new_needle && !force return;  // needle hasn't changed, no need to repeat
+
+    if config.settings.search_is_case_sensitive_when_uppercase_present && !case_sensitive_toggled_manually {
+        case_sensitive = contains_uppercase_ascii(new_needle);
+    }
 
     request.case_sensitive = case_sensitive;
     request.whole_word     = whole_word;
@@ -241,13 +254,13 @@ start_new_search :: (force := false) {
         flags := BASE_REGEX_FLAGS;
         if !case_sensitive flags |= .FoldCase;
 
-        regex, regex_is_valid = re.compile(cast(string) input.text, flags);
+        regex, regex_is_valid = re.compile(new_needle, flags);
         if !regex_is_valid return;  // only search if the regex is valid
 
         re.uninit(*regex);
     }
 
-    reset_search_request(*request, new_needle = cast(string) input.text);
+    reset_search_request(*request, new_needle);
     request.in_progress = true;
 
     num_threads := thread_group.worker_info.count;
@@ -292,7 +305,7 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
     for buffer_id : buffer_start_index .. buffer_end_index {
         // Search in buffer
         buffer := *open_buffers[buffer_id];
-        if (buffer.deleted && !buffer.modified) || buffer.binary continue;  // do not search
+        if (buffer.deleted && !buffer.modified) || buffer.binary || buffer.internal continue;  // do not search
 
         // Make sure the buffer contents doesn't change while we're scanning it
         lock(*buffer.content_lock);
@@ -303,8 +316,6 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
         buffer_id_part: u64 = (cast,trunc(u64) buffer_id)                        << 32;
         if buffer.modified || buffer.modified_on_disk then dir_id_part = 0;  // make sure modified buffers are on top
         buffer_sort_key: u64 = dir_id_part | buffer_id_part;
-
-        buffer_str := cast(string) buffer.bytes;
 
         if regex_search {
             find_all_using_regex(task, regex, buffer, buffer_id, buffer_sort_key);
@@ -323,6 +334,8 @@ find_all_using_regex :: (using task: *Search_Task, regex: re.Regexp, buffer: Buf
 
     while true {
         if buffer_str.count <= 0 break;
+
+        auto_release_temp();  // this is very important because the regex library allocates a lot and we need to throw it away immediately
 
         matched, captures := re.match(buffer_str, regex,, allocator = temp);
         if !matched break;
@@ -427,6 +440,7 @@ Finder :: struct {
     results: [..] Search_Result;
 
     case_sensitive: bool;
+    case_sensitive_toggled_manually: bool;
     whole_word: bool;
     regex_search: bool;
     regex_is_valid: bool;

@@ -29,6 +29,8 @@ platform_get_centered_window_dimensions :: (open_on_biggest: bool) -> s32, s32, 
             if max_area < area {
                 monitor  = it;
                 max_area = area;
+            } else if max_area == area && it.primary {
+                monitor = it;  // prefer primary if there's no biggest monitor
             }
         }
     } else {
@@ -122,7 +124,7 @@ platform_get_save_file_name :: (file_name := "") -> string /* temp */, success: 
     // Get the name to populate it in the filename box (convenient if we're resaving a deleted file)
     if name && name != "<new file>" {
         wide_name, success, length := utf8_to_wide_new(name,, allocator = temp);
-        if success memcpy(buffer.data, wide_name, min(buffer.count, length));
+        if success focus_memcpy(buffer.data, wide_name, min(buffer.count, length));
     }
 
     ofn: OPENFILENAMEW;
@@ -159,7 +161,7 @@ platform_find_font_by_name :: (name: string, allocator := temp) -> bool, string 
     // We would like to use `EnumFontFamiliesExA()` so we can filter out fonts that are
     // not monospace. However it only enumerates fonts that have been loaded in GDI via
     // `AddFontResourceEx()` which doesn't include fonts installed in the user specific
-    // location (`%LocalAppData\Microsoft\Windows\Fonts`) by default.
+    // location (`%LocalAppData%\Microsoft\Windows\Fonts`) by default.
     //
     // Instead of spamming `AddFontResourceEx()` calls we just take file names straight
     // from he registry.
@@ -199,7 +201,7 @@ platform_get_fonts_dir :: () -> string {
         ret := SHGetKnownFolderPath(*FOLDERID_Fonts, KF_FLAG_CREATE, null, *path_utf16);
         defer CoTaskMemFree(path_utf16);
         if SUCCEEDED(ret) {
-            fonts_dir = copy_string(wide_to_utf8_new(path_utf16,, allocator = temp));
+            fonts_dir = wide_to_utf8_new(path_utf16);
             path_overwrite_separators(fonts_dir, #char "/");
         } else {
             fonts_dir = "C:/Windows/Fonts";
@@ -218,6 +220,10 @@ platform_open_in_explorer :: (path: string, reveal := false) {
 
 platform_path_equals :: inline (path_a: string, path_b: string) -> bool {
     return equal_nocase(path_a, path_b);
+}
+
+platform_path_begins_with :: inline (path: string, subpath: string) -> bool {
+    return begins_with_nocase(path, subpath);
 }
 
 platform_path_contains :: inline (path: string, subpath: string) -> bool {
@@ -241,7 +247,7 @@ platform_set_border_color :: () {
     DwmSetWindowAttribute(window, CAPTION_COLOR, *col, size_of(u32));
 
     darkmode := ifx config.settings.dark_titlebar then 1 else 0;
-    DwmSetWindowAttribute(window, USE_IMMERSIVE_DARK_MODE , *darkmode, size_of(type_of(darkmode)));
+    DwmSetWindowAttribute(window, USE_IMMERSIVE_DARK_MODE, *darkmode, size_of(type_of(darkmode)));
 }
 
 platform_show_cursor :: (show: bool) {
@@ -316,6 +322,12 @@ GetLogicalDriveStringsW :: (nBufferLength: DWORD, lpBuffer: *u16) -> DWORD #fore
 ShellExecuteW :: (hwnd: HWND, lpOperation: *u16, lpFile: *u16, lpParameters: *u16, lpDirectory: *u16, nShowCmd: int) -> s32 #foreign shell32;
 SHGetKnownFolderPath :: (nFolder: REFGUID, dwFlags: DWORD, hToken: HANDLE, pszPath: **u16) -> HRESULT #foreign shell32;
 CoTaskMemFree :: (pv: *void) #foreign ole32;
+SendMessageW :: (hwnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT #foreign user32;
+RedrawWindow :: (hwnd: HWND, lprcUpdate: *RECT, hrgnUpdate: HANDLE, flags: u32) -> BOOL #foreign user32;
+
+RDW_INVALIDATE :: 0x0001;
+RDW_UPDATENOW  :: 0x0100;
+RDW_FRAME      :: 0x0400;
 
 #import "Windows";
 #import "Windows_Registry";

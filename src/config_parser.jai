@@ -3,12 +3,12 @@ CONFIG_SECTIONS :: Config_Section.[
     .{
         name = "workspace",
         subsections = .[
-            "workspace dirs",
-            "ignore dirs",
-            "allow file extensions",
-            "ignore file extensions",
+            "ignore",
+            "allow",
+            "file associations",
         ],
         parse_function = "parse_workspace_line",
+        allow_lines_outside_subsection = true,
     },
     .{
         name = "settings",
@@ -44,24 +44,25 @@ CONFIG_SECTIONS :: Config_Section.[
     },
 ];
 
-parse_config :: (name: string, filename: string, file_data: string, for_highlighting := false, as_theme := false) -> Config_Parse_Result {
+parse_config :: (name: string, file_path: string, file_data: string, for_highlighting := false, as_theme := false) -> Config_Parse_Result {
     // NOTE: This function allocates a lot and never frees.
-    //       It expects context.allocator to be either temp or a pool allocator.
+    if !#compile_time  assert(context.allocator.proc == flat_pool_allocator_proc || context.allocator.proc == temp.proc, "parse_config must use a pool or a temp allocator");
 
     using parser: Config_Parser;
     parser.parse_for_highlighting = for_highlighting;
     parser.parse_as_theme = as_theme;
+    if file_path then parser.config_path = get_parent_dir_path(file_path);
 
     trimmed_data := trim_left(file_data, " \t\n\r");  // skip empty lines, otherwise the handler will crash!
-    start_from_memory(*handler, name, filename, trimmed_data);
+    start_from_memory(*handler, name, file_path, trimmed_data);
     if handler.failed {
-        result.error_msg = tprint("Couldn't parse file '%'.\nPlease check that the version number is specified at the top in brackets, otherwise check the error log.", filename);
+        result.error_msg = tprint("Couldn't parse file '%'.\nPlease check that the version number is specified at the top in brackets, otherwise check the error log.", file_path);
         return result;
     }
 
     result.config.version = handler.version;
     if result.config.version != CURRENT_CONFIG_VERSION {
-        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, filename, CURRENT_CONFIG_VERSION);
+        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, file_path, CURRENT_CONFIG_VERSION);
         return result;
     }
 
@@ -131,10 +132,13 @@ parse_config :: (name: string, filename: string, file_data: string, for_highligh
         if success && error_msg then array_add(*result.warnings, error_msg);
     }
 
+    // Detect color reference loops and highlight them
+    // TODO: @colorref
+
     // Mix the common key mappings into every keymap to support common actions
-    array_extend(*result.config.keymap_editors,          result.config.keymap_common);
-    array_extend(*result.config.keymap_open_file_dialog, result.config.keymap_common);
-    array_extend(*result.config.keymap_search_dialog,    result.config.keymap_common);
+    array_add(*result.config.keymap_editors,          ..result.config.keymap_common);
+    array_add(*result.config.keymap_open_file_dialog, ..result.config.keymap_common);
+    array_add(*result.config.keymap_search_dialog,    ..result.config.keymap_common);
 
     result.success   = true;
     result.error_msg = "";
@@ -158,7 +162,23 @@ keymap_map_key_code_to_string :: (key_code: u32) -> string /* temp */ {
     return "??";
 }
 
+get_theme_file_from_name :: (name: string) -> string /* temp */ {
+    theme_name := to_lower_copy_new(name,, temp);
+    return tprint("%/%.focus-theme", themes_dir, theme_name);
+}
+
+
+#scope_file
+
 map_name_to_color :: (name: string) -> Color {
+    if begins_with(name, "code_") {
+        // Use the Token_Type enum to validate the name and map into Color
+        advance(*name, "code_".count);
+        valid_token_names := type_info(Token_Type).names;
+        found, idx := array_find(valid_token_names, name);
+        if found return xx idx;
+    }
+
     if name == {
         case "background0";                             return .BACKGROUND_0;
         case "background1";                             return .BACKGROUND_1;
@@ -195,19 +215,6 @@ map_name_to_color :: (name: string) -> Color {
         case "ui_error_bright";                         return .UI_ERROR_BRIGHT;
         case "ui_success";                              return .UI_SUCCESS;
 
-        case "code_default";                            return .CODE_DEFAULT;
-        case "code_comment";                            return .CODE_COMMENT;
-        case "code_type";                               return .CODE_TYPE;
-        case "code_function";                           return .CODE_FUNCTION;
-        case "code_punctuation";                        return .CODE_PUNCTUATION;
-        case "code_operation";                          return .CODE_OPERATION;
-        case "code_string";                             return .CODE_STRING;
-        case "code_value";                              return .CODE_VALUE;
-        case "code_highlight";                          return .CODE_HIGHLIGHT;
-        case "code_error";                              return .CODE_ERROR;
-        case "code_warning";                            return .CODE_WARNING;
-        case "code_keyword";                            return .CODE_KEYWORD;
-
         case "region_scope_export";                     return .REGION_SCOPE_EXPORT;
         case "region_scope_file";                       return .REGION_SCOPE_FILE;
         case "region_scope_module";                     return .REGION_SCOPE_MODULE;
@@ -215,6 +222,7 @@ map_name_to_color :: (name: string) -> Color {
         case "region_success";                          return .REGION_SUCCESS;
         case "region_warning";                          return .REGION_WARNING;
         case "region_error";                            return .REGION_ERROR;
+        case "region_heredoc";                          return .REGION_HEREDOC;
 
         case "build_panel_background";                  return .BUILD_PANEL_BACKGROUND;
         case "build_panel_scrollbar";                   return .BUILD_PANEL_SCROLLBAR;
@@ -226,15 +234,7 @@ map_name_to_color :: (name: string) -> Color {
     return .NONE;
 }
 
-get_theme_file_from_name :: (name: string) -> string /* temp */ {
-    theme_name := to_lower_copy_new(name,, allocator = temp);
-    return tprint("%/%.focus-theme", themes_dir, theme_name);
-}
-
-
-#scope_file
-
-add_highlight :: inline (parser: *Config_Parser, offset_from_line_start: s64, count: s64, type: Focus_Config_Token, line_start_offset := -1) {
+add_highlight :: inline (parser: *Config_Parser, offset_from_line_start: s64, count: s64, type: Token_Type, line_start_offset := -1) {
     if !parser.parse_for_highlighting return;
 
     offset := parser.line_start_offset + offset_from_line_start;
@@ -242,7 +242,7 @@ add_highlight :: inline (parser: *Config_Parser, offset_from_line_start: s64, co
 
     array_add(
         *parser.result.highlights,
-        Code_Highlight.{ offset = cast(s32) offset, count = cast(s32) count, color_num = cast(u8) type },
+        Code_Highlight.{ offset = cast(s32) offset, count = cast(s32) count, token_type = type },
     );
 }
 
@@ -365,9 +365,11 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
             append(*b, "}\n");
             return builder_to_string(*b);
         }
-        add_highlight(parser, 0, line.count, .header_top_level);
+        add_highlight(parser, 0, line.count, .header);
 
         if active_section == .style then result.config.offsets.style_section = line_start_offset;
+
+        if result.config.offsets.colors_section_start >= 0 && result.config.offsets.colors_section_end < 0 then result.config.offsets.colors_section_end = line_start_offset;
 
     } else {
         // Subsection
@@ -380,7 +382,7 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
         section := CONFIG_SECTIONS[active_section];
         if !array_find(section.subsections, subsection_name) {
             if section.subsections {
-                return true, tprint("Unknown subsection of [[%]]: '%'.\nAvailable options: [%].", section.name, line, join(..section.subsections, "], [",, allocator = temp));
+                return true, tprint("Unknown subsection of [[%]]: '%'.\nAvailable options: [%].", section.name, line, join(..section.subsections, "], [",, temp));
             } else {
                 return true, tprint("Unexpected subsection of [[%]]: '%'. This section doesn't allow any subsections.", section.name, line);
             }
@@ -405,9 +407,15 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
             return builder_to_string(*b);
         }
 
+        if active_subsection == .style_colors {
+            result.config.offsets.colors_section_start = line_start_offset;
+        } else if result.config.offsets.colors_section_start >= 0 && result.config.offsets.colors_section_end < 0 {
+            result.config.offsets.colors_section_end = line_start_offset;
+        }
+
         if parse_as_theme && active_subsection != .style_colors return true, "";  // don't highlight any subsections other than colors
 
-        add_highlight(parser, 0, line.count, .header);
+        add_highlight(parser, 0, line.count, .header2);
     }
 
     return true, "";
@@ -418,58 +426,57 @@ parse_workspace_line :: (using parser: *Config_Parser, line: string) -> success:
     add_highlight(parser, 0, line.count, .default);
 
     if active_subsection == {
-        case .workspace_workspace_dirs;
-            dir_path, success := get_absolute_path(line);
-            original_path := copy_temporary_string(line);
-            path_overwrite_separators(original_path, #char "/");
-            path_overwrite_separators(dir_path,      #char "/");
-            if !success || !platform_path_equals(original_path, dir_path) {
-                add_highlight(parser, 0, line.count, .error);
-                return true, tprint("Invalid directory '%'. Maybe it's not an absolute path or has a double slash?", line);
-            }
+        case .none;
+            path := copy_temporary_string(line);
+            path_overwrite_separators(path, #char "/");
+            path = trim_right(path, "/");
+            relative_to_config := !is_absolute_path(path) && config_path;
+            abs_path := ifx relative_to_config then tprint("%/%", config_path, path) else path;
 
-            dir_path = copy_string(dir_path);
-            if file_exists(dir_path) {
-                array_add(*result.config.workspace_dirs, dir_path);
+            if file_exists(abs_path) {
+                array_add(*result.config.members, copy_string(abs_path));
             } else {
                 if parse_for_highlighting {
                     // Highlight the bad chunk
-                    for chunk : split(dir_path, "/",, allocator = temp) {
-                        dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
-                        if !file_exists(dir_prefix) {
-                            add_highlight(parser, chunk.data - dir_path.data, chunk.count, .error);
+                    for chunk : split(path, "/",, temp) {
+                        dir_prefix := slice(path, 0, chunk.data - path.data + chunk.count);
+                        if !dir_prefix continue;
+                        abs_dir_prefix := ifx relative_to_config then tprint("%/%", config_path, dir_prefix) else dir_prefix;
+                        if !file_exists(abs_dir_prefix) {
+                            add_highlight(parser, chunk.data - path.data, chunk.count, .error);
                             break;
                         }
                     }
                 }
-                return true, tprint("Directory '%' doesn't exist.", dir_path);
+                return true, tprint("Attempted to load '%', but it doesn't exist", abs_path);
             }
-        case .workspace_ignore_dirs;
-            dirs := split(line, cast(u8) #char " ",, allocator = temp);
-            for dir : dirs {
-                if !dir continue;
-                path_overwrite_separators(dir, #char "/");
-                array_add(*result.config.ignore_dirs, dir);
+        case .workspace_ignore;
+            item := copy_string(trim(line, "\t "));
+            item = trim_right(item, "/");
+            path_overwrite_separators(item, #char "/");
+            array_add(*result.config.ignore, item);
+
+        case .workspace_allow;
+            item := copy_string(trim(line, "\t "));
+            item = trim_right(item, "/");
+            path_overwrite_separators(item, #char "/");
+            array_add(*result.config.allow, trim(item, "\t "));
+
+        case .workspace_file_associations;
+            found, wildcards, lang_name := split_from_left(line, cast(u8) #char ":");
+            wildcards, lang_name = trim(wildcards), trim(lang_name);
+            if !found || !wildcards || !lang_name {
+                add_highlight(parser, 0, line.count, .comment);  // don't scream at the user while they're typing
+                return true, tprint("Invalid file association: '%'\nThe correct format is: '<wildcard1> <wildcard2> ... : <language>'", line);
             }
-        case .workspace_allow_file_extensions;
-            extensions := split(line, cast(u8) #char " ",, allocator = temp);
-            for extensions {
-                if !it continue;
-                if contains_any_character(it, "*?") {
-                    array_add(*result.config.allow_file_extension_wildcards, trim_left(it, ".\t "));
-                } else {
-                    array_add(*result.config.allow_file_extensions, trim_left(it, "\t "));
-                }
+            lang, matched := get_lang_from_name(lang_name);
+            if !matched {
+                add_highlight(parser, lang_name.data - line.data, lang_name.count, .error);
+                available_langs := #run get_supported_buffer_langs_lowercase();
+                return true, tprint("Unknown language name: '%'\nAvailable languages:\n%", lang_name, join(..available_langs, ", ",, temp));
             }
-        case .workspace_ignore_file_extensions;
-            extensions := split(line, cast(u8) #char " ",, allocator = temp);
-            for extensions {
-                if !it continue;
-                if contains_any_character(it, "*?") {
-                    array_add(*result.config.ignore_file_extension_wildcards, trim_left(it, ".\t "));
-                } else {
-                    array_add(*result.config.ignore_file_extensions, trim_left(it, "\t "));
-                }
+            for split(wildcards, cast(u8) #char " ",, temp) {
+                array_add(*result.config.file_associations, .{ wildcard = trim(it), lang = lang, });
             }
     }
     return true, "";
@@ -490,7 +497,7 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
             font_settings := string.[ "font", "font_size" ];
             if !array_find(font_settings, setting) {
                 add_highlight(parser, 0, setting.count, .error);
-                return true, tprint("Unknown font option '%'. Available options: ", setting, join(..font_settings, ", ",, allocator = temp));
+                return true, tprint("Unknown font option '%'. Available options: ", setting, join(..font_settings, ", ",, temp));
             }
 
             if setting == {
@@ -523,22 +530,47 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
 
             color_name, value := break_by_spaces(line);
             color_name = trim_right(color_name, ":");
+
+            // Translate color name to color id
             color_id := map_name_to_color(color_name);
             if color_id == .NONE {
                 add_highlight(parser, 0, color_name.count, .error);
                 return true, tprint("Unknown color '%'", color_name);
             }
-            color, success := hex_to_color_vec4(value);
-            if !success {
-                add_highlight(parser, value.data - line.data, value.count, .error);
-                return true, tprint("Couldn't parse '%'. Expected a color in the form RRGGBB or RRGGBBAA, got '%'", color_name, value);
-            }
-            array_add(*result.config.colors, Parsed_Color.{ color_name, color });
 
+            if begins_with(value, "$") {
+                // This color refers to another color @colorref
+                ref_color_name := value;
+                advance(*ref_color_name, 1);
+                ref_color_id := map_name_to_color(ref_color_name);
+                if ref_color_id == .NONE {
+                    add_highlight(parser, value.data - line.data, value.count, .error);
+                    return true, tprint("Attempted to reference an unknown color '$%'", ref_color_name);
+                }
+                add_highlight(parser, value.data - line.data, value.count, .value);
+                array_add(*result.config.color_refs, .{
+                    color_name = color_name,
+                    color = color_id,
+                    wants_to_use = ref_color_id,
+                    line_start_offset = line_start_offset,
+                    line_length = xx line.count,
+                    section_offset = section_offset,
+                });
+            } else {
+                // Try to parse the hex value
+                color, success := hex_to_color_vec4(value);
+                if !success {
+                    add_highlight(parser, value.data - line.data, value.count, .error);
+                    return true, tprint("Couldn't parse '%'. Expected a color in the form RRGGBB or RRGGBBAA, got '%'", color_name, value);
+                }
+                array_add(*result.config.colors, Parsed_Color.{ color_id, color });
+            }
+
+            // Detect duplicates
             is_duplicate := false;
             for seen_colors {
                 if color_id != it.color continue;
-                add_highlight(parser, 0, it.line_length,   .comment, line_start_offset = it.line_start_offset);
+                add_highlight(parser, 0, it.line_length,   .warning, line_start_offset = it.line_start_offset);
                 add_highlight(parser, 0, color_name.count, .warning, line_start_offset = it.line_start_offset);
                 is_duplicate = true;
             }
@@ -572,7 +604,14 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         if value != "default" {
                             file_data, success := read_entire_file(theme_file);
                             if !success return true, tprint("Couldn't read theme file '%'", theme_file);
+
+                            migrated, new_file_data := maybe_migrate_config(theme_file, file_data);
+                            if migrated {
+                                add_success_message("Theme file '%' has been migrated to version [%]", theme_file, CURRENT_CONFIG_VERSION);
+                                file_data = new_file_data;
+                            }
                             theme_parse_result = parse_config(value, theme_file, file_data, as_theme = true);
+                            if theme_parse_result.success && migrated then write_entire_file(theme_file, new_file_data);
                         } else {
                             theme_parse_result = parse_config(value, "default", DEFAULT_CONFIG_FILE_DATA);
                         }
@@ -580,7 +619,7 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         if !theme_parse_result.success return true, tprint("Couldn't parse theme file '%'.\nError: %", theme_file, theme_parse_result.error_msg);
 
                         // Copy colors and font data (it points into the theme file data)
-                        array_extend(*result.config.colors, theme_parse_result.config.colors);
+                        array_add(*result.config.colors, ..theme_parse_result.config.colors);
                         result.config.font      = theme_parse_result.config.font;
                         result.config.font_size = theme_parse_result.config.font_size;
 
@@ -597,35 +636,6 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
     return true, "";
 }
 
-hex_to_color_vec4 :: (src_hex: string) -> Vector4, success: bool {
-    hex := src_hex;
-    if hex.count == 6 then hex = tprint("%FF", hex);
-    if hex.count != 8 return Vector4.{}, false;
-
-    r := slice(hex, 0, 2);
-    g := slice(hex, 2, 2);
-    b := slice(hex, 4, 2);
-    a := slice(hex, 6, 2);
-
-    to_float :: (byte_str: string) -> float {
-        hex_digit_to_int :: (char: u8) -> int {
-            char = to_upper(char);
-            if #char "0" <= char && char <= #char "9" return char - #char "0";
-            if #char "A" <= char && char <= #char "F" return 10 + char - #char "A";
-            return -1;
-        }
-
-        d1, d0 := cast(float)hex_digit_to_int(byte_str[0]), cast(float) hex_digit_to_int(byte_str[1]);
-        if d1 < 0 || d0 < 0 return -1;
-
-        return (16 * d1 + d0) / 255;
-    }
-
-    c := Vector4.{ to_float(r), to_float(g), to_float(b), to_float(a) };
-
-    return c, c.x >= 0 && c.y >= 0 && c.z >= 0 && c.w >= 0;
-}
-
 parse_build_line :: (using parser: *Config_Parser, line: string) -> success: bool, error_msg: string /* temp */ {
     using result.config.build;
 
@@ -639,7 +649,7 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
             return true, tprint("Command name can't be empty: %", line);
         }
 
-        add_highlight(parser, 0, line.count, .header);
+        add_highlight(parser, 0, line.count, .header2);
 
         command := array_add(*commands);
         command.* = defaults;  // inherit everything from defaults
@@ -707,29 +717,73 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
                     JAI;
                     print_to_builder(*b, code, option.name);
 
-                    // Validate working directories
+                    // Process working directories
                     if option.name == "build_working_dir" || option.name == "run_working_dir" {
                         code := #string JAI
-                            dir_path, success := get_absolute_path(setting_value);
-                            original_path := copy_temporary_string(setting_value);
-                            path_overwrite_separators(original_path, #char "/");
-                            path_overwrite_separators(dir_path,      #char "/");
-                            if !success || !platform_path_equals(original_path, dir_path) {
-                                add_highlight(parser, setting_value.data - line.data, setting_value.count, .error);
-                                return true, tprint("Invalid directory '%'. Maybe it's not an absolute path or has a double slash?", setting_value);
+                            // Exit early if variables are used in path
+                            vars_used := false;
+                            var_names := string.[
+                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%", "%PROJECT_CONFIG_DIR%",
+                            ];
+                            for var : var_names {
+                                start_index := 0;
+                                while true {
+                                    index := find_index_from_left(setting_value, var, start_index);
+                                    if index < 0 break;
+                                    start_index = index + var.count;
+                                    add_highlight(parser, setting_value.data - line.data + index, var.count, .value);
+                                    vars_used = true;
+                                }
                             }
-                            if file_exists(dir_path) {
+                            if vars_used return true, "";  // we're unable to validate it at this point
+                        JAI;
+                        append(*b, code);
+
+                        code = #string JAI
+                            // Validate path and handle relative paths
+                            dir_path := copy_temporary_string(setting_value);
+                            path_overwrite_separators(dir_path, #char "/");
+                            working_dir := get_working_directory_from_workspace(result.config.members);
+                            relative_to_working_dir := !is_absolute_path(dir_path) && working_dir;
+                            abs_path := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_path) else dir_path;
+
+                            if file_exists(abs_path) {
+                                target.%1 = copy_string(abs_path);
                                 return true, "";
                             } else {
+                                if !is_absolute_path(dir_path) && !working_dir  return true, "";  // if the workspace is empty, don't check relative paths
+
                                 // Highlight the bad chunk
-                                for chunk : split(dir_path, "/",, allocator = temp) {
+                                for chunk : split(dir_path, "/",, temp) {
                                     dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
-                                    if !file_exists(dir_prefix) {
+                                    if !dir_prefix continue;
+                                    abs_dir_prefix := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_prefix) else dir_prefix;
+                                    if !file_exists(abs_dir_prefix) {
                                         add_highlight(parser, setting_value.data - line.data + chunk.data - dir_path.data, chunk.count, .error);
                                         break;
                                     }
                                 }
-                                return true, tprint("Directory '%' doesn't exist.", dir_path);
+                                return true, tprint("Tried to use '%%' as a working dir in a build command, but it doesn't exist.", abs_path);
+                            }
+                        JAI;
+                        print_to_builder(*b, code, option.name);
+                    }
+
+                    // Highlight variables in the commands, if present
+                    if option.name == "build_command" || option.name == "run_command" {
+                        code := #string JAI
+                            var_names := string.[
+                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%",
+                                "%BUILD_WORKING_DIR%", "%RUN_WORKING_DIR%", "%PROJECT_CONFIG_DIR%",
+                            ];
+                            for var : var_names {
+                                start_index := 0;
+                                while true {
+                                    index := find_index_from_left(setting_value, var, start_index);
+                                    if index < 0 break;
+                                    start_index = index + var.count;
+                                    add_highlight(parser, setting_value.data - line.data + index, var.count, .value);
+                                }
                             }
                         JAI;
                         append(*b, code);
@@ -758,7 +812,7 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
     }
 
     if setting_name == "error_regex" {
-        _, regex_is_valid := re.compile(setting_value, BASE_REGEX_FLAGS);
+        _, regex_is_valid := re.compile(setting_value, .LikePerl & ~.OneLine);
         if !regex_is_valid {
             add_highlight(parser, setting_value.data - line.data, setting_value.count, .error);
             return true, tprint("Error regex is invalid: '%'", setting_value);
@@ -840,6 +894,20 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                         } else {
                             add_highlight(parser, cast(s64)(setting_value.data - line.data), setting_value.count, .error);
                             return true, tprint("Couldn't parse '%1' - expected a valid integer, got '%%'", setting_value);
+                        }
+                    END;
+                    print_to_builder(*b, code, setting.name);
+
+                case .ENUM;
+                    code := #string END
+                        enum_info := type_info(type_of(Settings.%1));
+                        found, idx := array_find(enum_info.names, value);
+                        if found {
+                            add_highlight(parser, cast(s64)(setting_value.data - line.data), setting_value.count, .value);
+                            result.config.settings.%1 = xx enum_info.values[idx];
+                        } else {
+                            add_highlight(parser, cast(s64)(setting_value.data - line.data), setting_value.count, .error);
+                            return true, tprint("Couldn't parse '%1' - valid values: %%", enum_info.names);
                         }
                     END;
                     print_to_builder(*b, code, setting.name);
@@ -982,10 +1050,11 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
 
         valid_mod_key := true;
 
-        if to_lower_copy_new(mod_key,, allocator = temp) == {
+        if to_lower_copy_new(mod_key,, temp) == {
             case "ctrl";    combo.mods.ctrl_pressed       = true;
             case "shift";   combo.mods.shift_pressed      = true;
             case "alt";     combo.mods.alt_pressed        = true;
+            case "opt";     combo.mods.alt_pressed        = true;
             case "cmd";     combo.mods.cmd_meta_pressed   = true;
             case "meta";    combo.mods.cmd_meta_pressed   = true;
             case "super";   combo.mods.cmd_meta_pressed   = true;
@@ -1006,7 +1075,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
         }
         modifier_string = remainder;
 
-        if valid_mod_key then add_highlight(parser, cast(s64)(mod_key.data - line.data), mod_key.count, .modifier_key);
+        if valid_mod_key then add_highlight(parser, cast(s64)(mod_key.data - line.data), mod_key.count, .value);
     }
 
     key_string := modifier_string;
@@ -1029,7 +1098,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
 
         if (key_code >= #char "a") && (key_code <= #char "z") {
             // Uppercase it, since our keyboard codes are uppercase.
-            key_code += cast,trunc(u32) (#char "A" - #char "a");  // This is a negative number; but we cast it to u32 and get the same result, because, twos-complement. The trunc is to make this legal.
+            key_code += (#char "a" - #char "A");
         }
 
         if s.count > 0 {
@@ -1105,12 +1174,10 @@ Parsed_Config :: struct {
     version: int;
 
     // Workspace
-    workspace_dirs:                  [..] string;
-    ignore_dirs:                     [..] string;
-    allow_file_extensions:           [..] string;
-    allow_file_extension_wildcards:  [..] string;
-    ignore_file_extensions:          [..] string;
-    ignore_file_extension_wildcards: [..] string;
+    members:            [..] string;
+    ignore:             [..] string;
+    allow:              [..] string;
+    file_associations:  [..] File_Association;
 
     // Keymap
     keymap_common:           [..] Key_Mapping;
@@ -1126,7 +1193,8 @@ Parsed_Config :: struct {
     theme: string;
     font: string;
     font_size: int;
-    colors:    [..] Parsed_Color;
+    colors:     [..] Parsed_Color;
+    color_refs: [..] Color_Reference;  // @colorref: not finished
 
     // Build commands
     build: Build_Config;
@@ -1138,6 +1206,9 @@ Parsed_Config :: struct {
     offsets: struct {
         style_section := -1;
         theme_line    := -1;
+
+        colors_section_start := -1;
+        colors_section_end   := -1;
     };
 };
 
@@ -1145,6 +1216,7 @@ Config_Parse_Result :: struct {
     config:     Parsed_Config;
     success:    bool;
     error_msg:  string;  // temp
+
     warnings:   [..] string;
     highlights: [..] Code_Highlight;
     warnings.allocator   = temp;  // I love jai
@@ -1152,7 +1224,7 @@ Config_Parse_Result :: struct {
 }
 
 Parsed_Color :: struct {
-    color_name: string;
+    color_id: Color;
     color: Vector4;
 }
 
@@ -1168,6 +1240,8 @@ Config_Section :: struct {
 
 Config_Parser :: struct {
     handler: Text_File_Handler;
+
+    config_path: string;  // to be used for relative paths
 
     line_start_offset: s32;  // holds the start offset of the line being parsed (ignoring any whitespace at the start)
     section_offset:    s32;  // holds the offset of the last seen section header
@@ -1252,7 +1326,15 @@ Seen_Color :: struct {
 Seen_Line :: struct {
     line_start_offset: s32;
     line_length:       s32;  // for highlighting the whole line if needed
-    section_offset: s32;
+    section_offset:    s32;
+}
+
+// @colorref: not finished
+Color_Reference :: struct {
+    color_name: string;
+    color: Color;
+    wants_to_use: Color;
+    using seen_line: Seen_Line;  // to highlight invalid references
 }
 
 

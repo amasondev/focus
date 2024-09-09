@@ -323,6 +323,9 @@ dump_debug_info :: (display: *Display, sb: *String_Builder) {
 
 #scope_module;
 
+#import "POSIX";
+#import "Linux";
+
 #import "String";
 #import "Hash_Table";
 
@@ -341,6 +344,7 @@ Input :: #import "Input";
 #load "ldw_display.jai";
 #load "ldw_input.jai";
 #load "ld_gl.jai";
+#load "xkb.jai";
 
 X11: X11_Lib;
 EGL: GL.EGL_Lib;
@@ -366,6 +370,8 @@ Base_Display :: struct {
     loop_wakeup_event : s32;
 
     gl: GL_Display;
+
+    xkb_state: LD_XKB_State;
 
     create_window: (
         display: *Display,
