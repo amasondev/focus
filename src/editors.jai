@@ -867,7 +867,7 @@ do_things_on_editor_close :: (editor_id: s64) {
     }
     if !buffer_is_still_visible {
         array_ordered_remove_by_value(*most_recent_buffers, editor.buffer_id);
-        if !buffer.modified then buffer.num_times_opened = 0;  // deprioritise it in the full file list
+        //if !buffer.modified then buffer.num_times_opened = 0;  // deprioritise it in the full file list
         if !buffer.has_file { buffer.deleted = true; buffer.modified = false; }  // get rid of newly created buffers we're closing
     }
 }
