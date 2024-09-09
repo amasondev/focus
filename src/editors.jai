@@ -574,7 +574,7 @@ editors_open_buffer :: (buffer_id: s64, placement: Editor_Placement = .in_place)
             }
     }
     buffer := *open_buffers[buffer_id];
-    if buffer.num_times_opened < 255 then buffer.num_times_opened += 1;
+    buffer.last_opened_time = frame_time;
 
     make_editor_active(editors.active);
     maybe_mark_buffer_as_deleted(buffer_id);  // check in case we missed that it's deleted
@@ -867,7 +867,7 @@ do_things_on_editor_close :: (editor_id: s64) {
     }
     if !buffer_is_still_visible {
         array_ordered_remove_by_value(*most_recent_buffers, editor.buffer_id);
-        if !buffer.modified then buffer.num_times_opened = 0;  // deprioritise it in the full file list
+        //if !buffer.modified then buffer.num_times_opened = 0;  // deprioritise it in the full file list
         if !buffer.has_file { buffer.deleted = true; buffer.modified = false; }  // get rid of newly created buffers we're closing
     }
 }

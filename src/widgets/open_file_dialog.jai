@@ -337,12 +337,14 @@ refresh_entries :: (clear_input := true) {
         entry.name_highlights = name_highlights;
         entry.path_highlights = path_highlights;
         // NOTE: there's space left in the sort key in case we need to add more parameters
-        score_part:      u64 = (cast,trunc(u64) score)                              << 22;
-        dir_id_part:     u64 = (cast,trunc(u64) (63 - buffer.file.project_dir_id))  << 16;
+        //dir_id_part:     u64 = (cast,trunc(u64) (63 - buffer.file.project_dir_id))  << 22;
+        dir_id_part:     u64 = (cast,trunc(u64) (127 - entry.project_dir_id))       << 48;
+        score_part:      u64 = (cast,trunc(u64) score)                              << 16;
         length_part:     u64 = (cast,trunc(u64) (400 - buffer_name.count))          <<  8;
-        times_open_part: u64 = (cast,trunc(u64) buffer.num_times_opened)            <<  0;
+        seconds := to_seconds(buffer.last_opened_time);
+        times_open_part: u64 = (cast,trunc(u64) seconds)            <<  0;
         if !filter.full_string then length_part = 0;  // don't sort by length when no filtering is applied
-        entry.sort_key = dir_id_part | score_part | length_part | times_open_part;
+        entry.sort_key = dir_id_part | score_part | times_open_part;
 
         if buffer.modified         then { entry.flags |= .MODIFIED;         entry.sort_key |= top_priority_bit; }
         if buffer.modified_on_disk then { entry.flags |= .MODIFIED_ON_DISK; entry.sort_key |= top_priority_bit; }

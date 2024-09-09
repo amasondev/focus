@@ -78,7 +78,6 @@ color_preview_popup:                                enabled  # options: enabled,
 search_is_case_sensitive_when_uppercase_present:    true
 
 
-
 # This is an example configuration for build commands
 
 # [[build commands]]

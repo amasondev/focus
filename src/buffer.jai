@@ -19,11 +19,10 @@ refresh_open_buffers :: () {
 
         session_notify_modified_buffer(editor.buffer_id);
 
-
         // Maybe mark buffer as not modified if we've made it match the contents on disk
         if !buffer.readonly then buffer.modified = buffer.meow_hash != calculate_hash(buffer.bytes);
         if !buffer.modified then buffer.modified_on_disk = false;  // we've verified that the contents matches that on disk
-        update_window_title(editor.buffer_id);
+
         finder.need_to_refresh_results = true;
     }
 }
@@ -887,6 +886,7 @@ strip_trailing_whitespace :: (using buffer: *Buffer, buffer_id: s64, on_save := 
         cursor.pos = real_coords_to_offset(buffer, pos);
         cursor.sel = real_coords_to_offset(buffer, sel);
     }
+    refresh_all_editors_for_buffer(buffer_id);
 }
 
 insert_final_newline :: (using buffer: *Buffer) {
@@ -1372,7 +1372,7 @@ deinit :: (using edit_group: *Buffer.Edit_Group) {
 // - replace all [..] with a custom array type without an allocator (also probably using s32's)
 Buffer :: struct {
     file: File_Info;
-    last_opened_time: Time; // for sorting in project search
+    last_opened_time: Apollo_Time;
     num_editors_open: u8;
 
     meow_hash: u64;
