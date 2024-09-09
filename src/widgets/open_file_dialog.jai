@@ -327,7 +327,8 @@ refresh_entries :: (clear_input := true) {
         dir_id_part:     u64 = (cast,trunc(u64) (127 - entry.project_dir_id))       << 48;
         score_part:      u64 = (cast,trunc(u64) score)                              << 16;
         length_part:     u64 = (cast,trunc(u64) (400 - buffer_name.count))          <<  8;
-        times_open_part: u64 = (cast,trunc(u64) buffer.last_opened_time)            <<  0;
+        seconds := to_seconds(buffer.last_opened_time);
+        times_open_part: u64 = (cast,trunc(u64) seconds)            <<  0;
         if !filter.full_string then length_part = 0;  // don't sort by length when no filtering is applied
         entry.sort_key = dir_id_part | score_part | times_open_part;
 
