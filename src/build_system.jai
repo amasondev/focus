@@ -270,11 +270,13 @@ show_build_panel :: () {
         previously_active_editor = editors.active;
     }
     build_panel_is_shown = true;
+    start_animation(*build_panel_height_anim, build_panel_height_anim.target, build_panel_height);
 }
 
 hide_build_panel :: () {
     build_panel_lose_focus();
     build_panel_is_shown = false;
+    start_animation(*build_panel_height_anim, build_panel_height_anim.target, 0);
 }
 
 is_build_panel :: inline (editor_id: s64) -> bool {

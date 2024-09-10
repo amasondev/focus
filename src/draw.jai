@@ -611,7 +611,8 @@ draw_color_picker :: (editor: *Editor, buffer: *Buffer, picker_rect: Rect, range
 }
 
 maybe_draw_build_panel :: () {
-    if !build_panel_is_shown return;
+    anim_val := get_animation_value(build_panel_height_anim);
+    if values_are_close(anim_val, 0) return;
 
     // Drag build panel title bar first before drawing
     if ui.active == .build_panel_title_bar {
@@ -631,9 +632,8 @@ maybe_draw_build_panel :: () {
     }
     if !values_are_close(build_panel_height, build_panel_height_anim.target) {
         redraw_requested = true;
-        build_panel_height = get_animation_value(build_panel_height_anim);
     }
-    build_panel_rect = cut_bottom(build_panel_rect, build_panel_rect.h * build_panel_height);
+    build_panel_rect = cut_bottom(build_panel_rect, build_panel_rect.h * anim_val);
 
     if !is_valid(build_panel_rect) return;
     draw_rounded_rect_with_shadow(build_panel_rect, Color.BUILD_PANEL_BACKGROUND, radius = 0.1, shadow_size = char_size);

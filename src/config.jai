@@ -455,8 +455,8 @@ apply_config :: () {
     if config.settings.window_y      != -1000 clamp_and_warn(*config.settings.window_y,     -500, 3000,  "Window Y clamped to %");
 
     build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
-    build_panel_height = config.settings.build_panel_height_percent / 100.0;
-    build_panel_height_anim.target = build_panel_height;
+    //build_panel_height = config.settings.build_panel_height_percent / 100.0;
+    build_panel_height_anim.target = config.settings.build_panel_height_percent / 100.0;
     build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
 
     // Must do after the validation
