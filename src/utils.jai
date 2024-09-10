@@ -420,6 +420,7 @@ start_animation :: (anim: *Tween_Animation(T), start: $T, target: T, speed: Time
 
 get_animation_value :: (using anim: Tween_Animation($T)) -> T {
     t := (to_float64_seconds(frame_time - started_at) / speed);
+
     t = clamp(t, 0, 1);
     if #complete func == {
         case .lerp;       return start + cast(T) (cast(float)(target - start) * t);
