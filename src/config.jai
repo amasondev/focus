@@ -456,7 +456,7 @@ apply_config :: () {
 
     build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
     build_panel_height = config.settings.build_panel_height_percent / 100.0;
-    build_panel_height_anim.target = config.settings.build_panel_height_percent / 100.0;
+    build_panel_height_anim.target = ifx build_panel_is_shown build_panel_height else 0;
     build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
 
     // Must do after the validation
